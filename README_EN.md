@@ -33,6 +33,10 @@ The installer downloads the management scripts from this repository. To install 
 
 ## 🚀 Quick Start
 
+### LuCI installation
+
+Use the `.ipk` on official OpenWrt 24.10 and the `.apk` on 25.12. Verify the files with the supplied `SHA256SUMS`. On 25.12, copy the matching trusted `small-tailscale.pem` to `/etc/apk/keys/` on the router. In **System → Software**, update the package lists, upload the package, then sign in again. Open **Services → 精简版 Tailscale** to download the client, configure the node and view its logs. [Package build and installation instructions (Chinese)](README.md#在-luci-中安装和管理)
+
 ### Prerequisites
 
 - OpenWRT system
