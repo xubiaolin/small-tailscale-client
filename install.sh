@@ -19,8 +19,8 @@ SCRIPTS_TGZ_PATH="/tmp/tailscale-openwrt-scripts.tar.gz"
 SCRIPTS_TGZ_URL_SUFFIX="xubiaolin/small-tailscale-client/raw/refs/heads/main/tailscale-openwrt-scripts.tar.gz"
 
 # 预先计算的校验和（由 GitHub Actions 自动回填）
-EXPECTED_CHECKSUM_SHA256="f578d1ede261bc9dfd2f4d330b6d52945d3f6ce2a2af6141c712440366b6d46e"
-EXPECTED_CHECKSUM_MD5="b1a3d7feb57131c2d025f3a31bdd20db"
+EXPECTED_CHECKSUM_SHA256="47807089e5d464a941be56679ae960b7c6d0b9944f78e53d02ded5580c5aaf44"
+EXPECTED_CHECKSUM_MD5="def54d61b1af808338cbb61a33d3d97a"
 
 # -------------------- 日志 --------------------
 log_info() {
