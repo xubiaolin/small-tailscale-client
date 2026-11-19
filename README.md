@@ -13,7 +13,7 @@
 
 ## 项目简介
 
-`small-tailscale-client` 帮你在 OpenWrt 路由器上安装和管理 Tailscale。本仓库提供安装脚本和 `tailscale-helper` 菜单，路由器使用的精简版 Tailscale 二进制由上游项目发布。[上游项目](https://github.com/CH3NGYZ/small-tailscale-openwrt)
+`small-tailscale-client` 帮你在 OpenWrt 路由器上安装和管理 Tailscale。本仓库提供 LuCI 插件、安装脚本和 `tailscale-helper` 菜单，路由器使用的精简版 Tailscale 二进制由上游项目发布。[上游项目](https://github.com/CH3NGYZ/small-tailscale-openwrt)
 
 安装时，脚本读取上游发布的 `version.txt` 确定最新版，再按路由器架构下载并校验二进制。安装和自动更新全程使用普通文件下载，无需 GitHub API。
 
@@ -26,7 +26,49 @@
 | 多架构支持 | 支持 x86、ARM、MIPS 等常见架构 |
 | 脚本更新 | 可通过管理菜单在线更新脚本包 |
 
-## 快速开始
+## 在 LuCI 中安装和管理
+
+| 官方 OpenWrt 版本 | 安装文件 | 安装前准备 |
+| --- | --- | --- |
+| 24.10 | `luci-app-small-tailscale_1.0.0-r1_all.ipk` | 在 **系统 → 软件包** 中更新软件包列表 |
+| 25.12 | `luci-app-small-tailscale-1.0.0-r1.apk` | 更新软件包列表，并导入同一构建的 APK 签名公钥 |
+
+安装包适用于各 CPU 架构。先在电脑上核对随包提供的 `SHA256SUMS`。若使用 OpenWrt 25.12，请将可信的 `small-tailscale.pem` 导入路由器一次。以下命令在公钥所在目录运行，把地址改成路由器的管理地址。
+
+```sh
+ssh root@192.168.1.1 'cat > /etc/apk/keys/small-tailscale.pem' < small-tailscale.pem
+```
+
+在 **系统 → 软件包 → 上传软件包** 中选取对应文件并安装。重新登录 LuCI，打开 **服务 → 精简版 Tailscale → 节点管理**。首次下载默认使用本地安装和最新版本。安装后可在此保存参数、启动服务并打开授权链接，在 **日志** 中查看运行和下载记录。已使用 `tailscale-helper` 的路由器会沿用原节点。来自系统软件源的节点会在页面显示处理指引。
+
+如通过 SSH 安装，把安装包复制到路由器的 `/tmp` 后，执行对应命令。
+
+```sh
+# OpenWrt 24.10
+opkg update && opkg install /tmp/luci-app-small-tailscale_1.0.0-r1_all.ipk
+
+# OpenWrt 25.12，已导入公钥
+apk update && apk add /tmp/luci-app-small-tailscale-1.0.0-r1.apk
+```
+
+25.12 也可在与可信校验清单核对 APK 的 SHA256 后，单次执行 `apk add --allow-untrusted /tmp/luci-app-small-tailscale-1.0.0-r1.apk`，跳过本次本地包的签名验证。
+
+### 从源码构建安装包
+
+在 Linux x86_64 上，下载并解压 OpenWrt 24.10.8 和 25.12.6 的官方 x86/64 SDK。在仓库根目录用以下命令构建，将两个 SDK 目录换成实际路径。构建需要 Git、OpenSSL 与 GNU tar/coreutils。[24.10.8 SDK](https://downloads.openwrt.org/releases/24.10.8/targets/x86/64/) · [25.12.6 SDK](https://downloads.openwrt.org/releases/25.12.6/targets/x86/64/)
+
+```sh
+export APK_SIGNING_KEY="$HOME/.local/share/small-tailscale-openwrt/apk-signing.pem"
+install -d -m 700 "$(dirname "$APK_SIGNING_KEY")"
+# 首次构建时生成私钥，升级版本时沿用该密钥
+test -f "$APK_SIGNING_KEY" || (umask 077 && openssl genrsa -out "$APK_SIGNING_KEY" 4096)
+sh luci-app-small-tailscale/build.sh /path/to/24.10.8-sdk /path/to/25.12.6-sdk
+(cd dist && sha256sum -c SHA256SUMS)
+```
+
+`dist/` 含 IPK、签名 APK、公钥和校验清单。相同提交、SDK 和 RSA 私钥可重复生成相同文件。构建默认使用最近一次更改插件或管理脚本的提交时间，也可设置 `SOURCE_DATE_EPOCH` 指定 Unix 时间戳。
+
+## 通过命令行脚本安装
 
 ### 1. 运行安装脚本
 
