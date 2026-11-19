@@ -22,9 +22,9 @@ show_menu() {
     log_info "      4).  📤 登出 Tailscale"
     log_info "      5).  ❌ 卸载 Tailscale"
     log_info "------------------------------------------"
-    log_info "      6).  🔄 管理 Tailscale 自动更新"
+    log_info "      6).  🔄 配置自动更新和版本策略"
     log_info "      7).  🔄 手动运行更新脚本"
-    log_info "      8).  🌐 查看 GitHub 下载地址"
+    log_info "      8).  🌐 设置 GitHub 下载地址"
     log_info "      9).  📦 查看本地 Tailscale 存在版本"
     log_info "     10).  📦 查看远程 Tailscale 最新版本"
     log_info "     11).  🔔 管理推送通知"
@@ -49,82 +49,8 @@ handle_choice() {
                 log_error "❌  tailscale 未安装或命令未找到"
                 log_error "📦  请先安装 tailscale 后再运行本脚本"
             else
-                local tmp_log="/tmp/tailscale_up.log"
-                local pipe="/tmp/tailscale_up.pipe"
-                local tmp_status="/tmp/tailscale_up.status"
-
-                : > "$tmp_log"
-                rm -f "$tmp_status"
-                [ -p "$pipe" ] && rm -f "$pipe"
-                mkfifo "$pipe"
-
-                log_info "🚀  执行 tailscale up, 正在生成登录链接..."
-
-                # 后台运行 tailscale up，记录退出码，并单独写入完成标记避免污染原始输出
-                (
-                    tailscale up >"$tmp_log" 2>&1
-                    printf '%s\n' "$?" >"$tmp_status"
-                    printf '__TS_UP_DONE__\n' >"$pipe"
-                ) &
-                ts_up_pid=$!
-
-                # 用 tail -F 写入命名管道
-                tail -F "$tmp_log" >"$pipe" &
-                tail_pid=$!
-
-                auth_detected=false
-                fail_detected=false
-
-                while read -r line; do
-                    echo "$line" | grep -qE "https://[^ ]*tailscale.com" && {
-                        auth_url=$(echo "$line" | grep -oE "https://[^ ]*tailscale.com[^ ]*")
-                        log_info "🔗  tailscale 等待认证, 请访问以下网址登录：$auth_url"
-                        auth_detected=true
-                    }
-
-                    echo "$line" | grep -qiE "failed|error|illegal instruction|segmentation fault|not found|permission denied|panic" && {
-                        log_error "❌  tailscale up 执行失败：$line"
-                        fail_detected=true
-                        break
-                    }
-
-                    echo "$line" | grep -q "__TS_UP_DONE__" && {
-                        ts_up_rc=1
-                        [ -f "$tmp_status" ] && ts_up_rc=$(cat "$tmp_status")
-
-                        if [ "$auth_detected" != "true" ] && [ "$fail_detected" != "true" ]; then
-                            if [ "$ts_up_rc" -ne 0 ]; then
-                                if [ -s "$tmp_log" ]; then
-                                    log_error "❌  tailscale up 执行失败：$(cat "$tmp_log")"
-                                else
-                                    log_error "❌  tailscale up 执行失败，退出码：$ts_up_rc"
-                                fi
-                            else
-                                if [ -s "$tmp_log" ]; then
-                                    log_info "✅  tailscale up 执行完成：$(cat "$tmp_log")"
-                                else
-                                    log_info "✅  tailscale up 执行完成, 无输出"
-                                fi
-                            fi
-                        fi
-                        break
-                    }
-                done <"$pipe"
-
-                # 清理后台进程
-                kill "$ts_up_pid" 2>/dev/null
-                kill "$tail_pid" 2>/dev/null
-
-                # 删除临时文件
-                rm -f "$tmp_log" "$pipe" "$tmp_status"
-
-                # 检查登录状态
-                if ! tailscale status >/dev/null 2>&1; then
-                    log_error "⚠️  tailscale 未登录或状态异常"
-                else
-                    log_info "🎉  tailscale 登录成功，状态正常"
-                fi
-
+                log_info "正在启动 Tailscale，请按提示打开授权链接"
+                "$CONFIG_DIR/tailscale_up_generator.sh" --run || log_error "Tailscale 登录失败"
             fi
             log_info "✅  请按回车继续..." 1
             read _
@@ -165,7 +91,7 @@ handle_choice() {
             read _
             ;;
         7)
-            $CONFIG_DIR/autoupdate.sh
+            "$CONFIG_DIR/autoupdate.sh" --manual
             log_info "✅  请按回车继续..." 1
             read _
             ;;
@@ -197,6 +123,11 @@ handle_choice() {
             read _
             ;;
         13)
+            if [ -d /usr/share/small-tailscale/scripts ]; then
+                log_info "管理脚本随 luci-app-small-tailscale 安装，请使用 opkg 或 apk 升级插件"
+                read -r _
+                return
+            fi
             URL="${GITHUB_DOWNLOAD_BASE_URL}/${INSTALL_SCRIPT_URL_SUFFIX}"
             tmpfile=$(mktemp)
             if webget "$tmpfile" "$URL" "echooff"; then
@@ -211,11 +142,11 @@ handle_choice() {
             ;;
         14)
             # 检查日志文件是否存在
-            if [ -f /tmp/tailscale_update.log ]; then
+            if [ -f "$LOG_FILE" ]; then
                 # 如果文件存在，则显示日志内容
                 log_info "    日志内容如下："
                 log_info "    ---------------------------"
-                cat /tmp/tailscale_update.log
+                cat "$LOG_FILE"
                 log_info "    ---------------------------"
             else
                 # 如果文件不存在，则提示用户日志文件未找到
@@ -242,7 +173,7 @@ clear
 while true; do
     show_menu
     log_info "✅  请输入你的选择: " 1
-    read choice
+    IFS= read -r choice || exit 0
     log_info ""
     handle_choice "$choice"
     clear
