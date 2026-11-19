@@ -1,14 +1,11 @@
 <div align="center">
 
-# Tailscale on OpenWrt
+# small-tailscale-client
 
 **面向 OpenWrt 的 Tailscale 安装、配置与管理工具**
 
-[![Version](https://img.shields.io/badge/version-v1.1.0-2ea44f)](https://github.com/CH3NGYZ/small-tailscale-openwrt)
-[![Shell](https://img.shields.io/badge/shell-sh-4eaa25)](https://github.com/CH3NGYZ/small-tailscale-openwrt)
+[![Shell](https://img.shields.io/badge/shell-sh-4eaa25)](scripts/)
 [![License](https://img.shields.io/badge/license-MIT-1677ff)](LICENSE)
-
-一键安装 · 自动更新 · 镜像测速 · 直连切换 · 推送通知
 
 </div>
 
@@ -16,14 +13,15 @@
 
 ## 项目简介
 
-本项目为 OpenWrt 提供完整的 Tailscale 管理方案，覆盖自动化安装、版本管理、下载线路切换、镜像测速和通知推送等常用场景。
+`small-tailscale-client` 帮你在 OpenWrt 路由器上安装和管理 Tailscale。本仓库提供安装脚本和 `tailscale-helper` 菜单，路由器使用的精简版 Tailscale 二进制由上游项目发布。[上游项目](https://github.com/CH3NGYZ/small-tailscale-openwrt)
+
+安装时，脚本读取上游发布的 `version.txt` 确定最新版，再按路由器架构下载并校验二进制。安装和自动更新全程使用普通文件下载，无需 GitHub API。
 
 | 功能 | 说明 |
 | :--- | :--- |
-| 一键安装 | 支持本地安装和内存安装，可选择指定版本 |
+| 一键安装 | 支持本地安装和内存安装，默认下载上游最新发布版本 |
 | 自动更新 | 定时检查新版本，更新后自动重启服务 |
-| 下载加速 | 自动测速代理镜像，并优先使用最快线路 |
-| 直连切换 | 可随时切换 GitHub 直连与代理模式 |
+| 下载加速 | 默认直连 GitHub，可通过环境变量指定下载镜像 |
 | 推送通知 | 支持 Server 酱、Bark、NTFY 和 PushPlus |
 | 多架构支持 | 支持 x86、ARM、MIPS 等常见架构 |
 | 脚本更新 | 可通过管理菜单在线更新脚本包 |
@@ -32,33 +30,16 @@
 
 ### 1. 运行安装脚本
 
-使用代理镜像安装：
+在 OpenWrt 终端运行以下命令。第一行启用下载镜像。如果路由器可以直连 GitHub，可跳过这行。
 
 ```sh
-rm -rf /etc/tailscale /tmp/tailscale-use-direct /tmp/install.sh
-URL="https://gh.ch3ng.top/CH3NGYZ/small-tailscale-openwrt/raw/refs/heads/main/install.sh"
-(command -v curl >/dev/null && curl -fSL "$URL" -o /tmp/install.sh || wget "$URL" -O /tmp/install.sh) || { echo 下载失败; exit 1; }
-sh /tmp/install.sh || { echo 执行失败; exit 1; }
+export GITHUB_DOWNLOAD_BASE_URL='https://git.mirrors.imoyuapp.win/https://github.com'
+download_base=${GITHUB_DOWNLOAD_BASE_URL:-https://github.com}
+URL="${download_base%/}/xubiaolin/small-tailscale-client/raw/refs/heads/main/install.sh"
+(curl -fL "$URL" -o /tmp/install.sh || wget -O /tmp/install.sh "$URL") && sh /tmp/install.sh
 ```
 
-<details>
-<summary><strong>使用 GitHub 直连安装</strong></summary>
-
-```sh
-rm -rf /etc/tailscale /tmp/install.sh
-touch /tmp/tailscale-use-direct
-URL="https://github.com/CH3NGYZ/small-tailscale-openwrt/raw/refs/heads/main/install.sh"
-(command -v curl >/dev/null && curl -fSL "$URL" -o /tmp/install.sh || wget "$URL" -O /tmp/install.sh) || { echo 下载失败; exit 1; }
-sh /tmp/install.sh || { echo 执行失败; exit 1; }
-```
-
-</details>
-
-安装过程中根据提示选择：
-
-1. 安装模式：本地安装或内存安装
-2. 是否启用自动更新
-3. Tailscale 版本
+进入菜单后选择 `1` 安装 Tailscale。选好本地或内存安装模式，并确认是否启用自动更新后，安装程序会直接下载上游最新发布版本。如果需要安装特定版本，可运行 `/etc/tailscale/setup.sh --version=TAG`，将 `TAG` 换成该版本的发布标签。
 
 > [!NOTE]
 > 运行前请确认设备使用 OpenWrt、网络连接正常，并具备基础 Shell 环境。
@@ -95,15 +76,15 @@ tailscale-helper
 
 ## 管理菜单
 
-运行 `tailscale-helper` 后，可使用以下功能：
+`tailscale-helper` 可以离线打开。选择 `10` 可查询上游最新版本。
 
 | 选项 | 功能 | 选项 | 功能 |
 | :---: | :--- | :---: | :--- |
-| 1 | 安装 / 重装 Tailscale | 8 | 切换代理 / 直连状态 |
+| 1 | 安装 / 重装 Tailscale | 8 | 查看 GitHub 下载地址 |
 | 2 | 登录 Tailscale | 9 | 查看本地 Tailscale 版本 |
 | 3 | 生成 Tailscale 启动命令 | 10 | 查看远程最新版本 |
 | 4 | 登出 Tailscale | 11 | 管理推送通知 |
-| 5 | 卸载 Tailscale | 12 | 排序代理池 |
+| 5 | 卸载 Tailscale | 12 | 测试已配置的下载镜像 |
 | 6 | 管理自动更新 | 13 | 更新脚本包 |
 | 7 | 手动运行更新脚本 | 14 | 显示更新日志 |
 | 0 | 退出 | | |
@@ -116,12 +97,12 @@ tailscale-helper
 
 - 管理自动更新：选择 `6`
 - 手动更新：选择 `7`
-- 切换代理 / 直连：选择 `8`
+- 查看当前下载地址：选择 `8`
 - 配置推送通知：选择 `11`
-- 镜像测速排序：选择 `12`
+- 测试已配置的下载镜像：选择 `12`
 - 更新脚本包：选择 `13`
 
-## 自动更新与代理
+## 自动更新与下载地址
 
 ### 自动更新流程
 
@@ -131,30 +112,25 @@ tailscale-helper
 4. 更新完成后自动重启 Tailscale 服务
 5. 根据配置发送成功或失败通知
 
-系统会自动创建以下定时任务：
+安装程序会为 `/etc/tailscale/autoupdate.sh` 创建每日定时任务。可用 `crontab -l` 查看实际执行时间。
 
-```cron
-# 镜像维护任务（2:00-3:00 随机时间）
-$RANDOM_MIN $RANDOM_HOUR * * * /etc/tailscale/test_mirrors.sh
+### 下载地址配置
 
-# 自动更新任务（4:00-6:00 随机时间）
-$UPDATE_MIN $UPDATE_HOUR * * * /etc/tailscale/autoupdate.sh
-```
+默认下载地址是 `https://github.com`。安装和自动更新会从上游 `CH3NGYZ/small-tailscale-openwrt` 下载 `releases/latest/download/version.txt` 获取最新版本号，再下载该版本的校验文件和二进制。
 
-查看当前定时任务：
+要通过镜像下载脚本和 Release 文件，在运行安装命令或 `tailscale-helper` 前设置 `GITHUB_DOWNLOAD_BASE_URL`。地址可以带结尾斜杠。如果镜像要求保留完整的 GitHub URL，请在镜像地址后附上 `/https://github.com`。
 
 ```sh
-crontab -l
+export GITHUB_DOWNLOAD_BASE_URL='https://git.mirrors.imoyuapp.win/https://github.com'
 ```
 
-### 下载模式
+`export` 对当前终端及其子进程生效。要让开机服务和定时更新也使用镜像，可将该变量写入 `/etc/tailscale/github-download.env`。文件使用纯文本赋值格式。
 
-| 模式 | 说明 | 适用情况 |
-| :--- | :--- | :--- |
-| GitHub 直连 | 直接连接 GitHub，延迟较低 | 网络可稳定访问 GitHub |
-| 代理镜像 | 通过测速后的镜像源下载 | GitHub 访问不稳定或受限 |
+```text
+GITHUB_DOWNLOAD_BASE_URL=https://git.mirrors.imoyuapp.win/https://github.com
+```
 
-通过管理菜单的选项 `8` 切换下载模式，使用选项 `12` 手动测速并重新排序代理池。
+进程环境中的变量优先于文件配置。要临时使用官方地址，可以给单次命令传入空值，例如 `GITHUB_DOWNLOAD_BASE_URL= tailscale-helper`。菜单选项 `8` 显示当前地址，选项 `12` 测试已配置的下载镜像。
 
 ## 配置说明
 
@@ -164,8 +140,7 @@ crontab -l
 /etc/tailscale/
 ├── install.conf          # 安装模式、版本、架构等
 ├── notify.conf           # 通知服务配置
-├── proxies.txt           # 代理列表
-├── valid_proxies.txt     # 测速后的有效代理列表
+├── github-download.env   # 可选，开机和定时更新使用的 GitHub 地址
 ├── current_version       # 当前 Tailscale 版本
 └── scripts/              # 管理脚本
 ```
@@ -188,9 +163,6 @@ ARCH=amd64
 
 # 设备主机名
 HOST_NAME=OpenWrt
-
-# GitHub 直连模式：true 或 false
-GITHUB_DIRECT=false
 
 # 安装时间戳
 TIMESTAMP=1234567890
@@ -240,7 +212,7 @@ PUSHPLUS_TOKEN=""
 | 通知事件 | 触发条件 | 配置项 |
 | :--- | :--- | :--- |
 | 更新成功 | Tailscale 更新完成 | `NOTIFY_UPDATE` |
-| 镜像失效 | 所有代理镜像均不可用 | `NOTIFY_MIRROR_FAIL` |
+| 镜像失效 | 手动测试已配置的下载镜像失败 | `NOTIFY_MIRROR_FAIL` |
 | 紧急错误 | 更新或安装失败 | `NOTIFY_EMERGENCY` |
 
 运行 `tailscale-helper` 并选择选项 `11`，即可配置通知服务和发送测试通知。
@@ -255,8 +227,8 @@ PUSHPLUS_TOKEN=""
 | 脚本 | 用途 | 调用方式 |
 | :--- | :--- | :--- |
 | [`install.sh`](install.sh) | 检查依赖、下载软件包、校验并初始化 | `sh install.sh` |
-| [`pretest_mirrors.sh`](pretest_mirrors.sh) | 下载校验文件、预检代理并测速 | 由 `install.sh` 调用 |
-| [`setup.sh`](scripts/setup.sh) | 选择安装模式、版本和更新策略 | 菜单选项 `1` |
+| [`pretest_mirrors.sh`](pretest_mirrors.sh) | 调用已安装的镜像测试脚本 | 旧版安装流程的兼容入口 |
+| [`setup.sh`](scripts/setup.sh) | 选择安装模式和更新策略，安装 Tailscale | 菜单选项 `1` |
 | [`helper.sh`](scripts/helper.sh) | 提供交互式管理菜单 | `tailscale-helper` |
 
 ### 管理脚本
@@ -265,15 +237,15 @@ PUSHPLUS_TOKEN=""
 | :--- | :--- | :--- |
 | [`update_ctl.sh`](scripts/update_ctl.sh) | 控制自动更新开关 | 菜单选项 `6` |
 | [`autoupdate.sh`](scripts/autoupdate.sh) | 检查版本并执行自动更新 | 定时任务或手动调用 |
-| [`github_direct_ctl.sh`](scripts/github_direct_ctl.sh) | 切换 GitHub 直连 / 代理模式 | 菜单选项 `8` |
-| [`test_mirrors.sh`](scripts/test_mirrors.sh) | 测试镜像速度并排序 | 菜单选项 `12` |
+| [`github_direct_ctl.sh`](scripts/github_direct_ctl.sh) | 显示当前下载地址 | 菜单选项 `8` |
+| [`test_mirrors.sh`](scripts/test_mirrors.sh) | 测试已配置的下载镜像并校验文件 | 菜单选项 `12` |
 
 ### 服务与工具脚本
 
 | 脚本 | 用途 | 调用方式 |
 | :--- | :--- | :--- |
 | [`setup_service.sh`](scripts/setup_service.sh) | 生成并启动 Tailscale 服务 | 由 `setup.sh` 调用 |
-| [`setup_cron.sh`](scripts/setup_cron.sh) | 配置镜像维护和自动更新任务 | 由 `setup.sh` 调用 |
+| [`setup_cron.sh`](scripts/setup_cron.sh) | 配置自动更新任务 | 由 `setup.sh` 调用 |
 | [`uninstall.sh`](scripts/uninstall.sh) | 卸载 Tailscale 及相关配置 | 菜单选项 `5` |
 | [`fetch_and_install.sh`](scripts/fetch_and_install.sh) | 下载并安装 Tailscale 二进制文件 | 由其他脚本调用 |
 | [`notify_ctl.sh`](scripts/notify_ctl.sh) | 管理通知配置 | 菜单选项 `11` |
@@ -291,7 +263,7 @@ PUSHPLUS_TOKEN=""
 
 ```sh
 opkg update
-opkg install libustream-openssl ca-bundle kmod-tun coreutils-timeout coreutils-nohup curl jq
+opkg install libustream-openssl ca-bundle kmod-tun coreutils-timeout coreutils-nohup curl
 ```
 
 </details>
@@ -316,9 +288,9 @@ opkg install libustream-openssl ca-bundle kmod-tun coreutils-timeout coreutils-n
 </details>
 
 <details>
-<summary><strong>代理镜像全部失效</strong></summary>
+<summary><strong>如何恢复 GitHub 官方下载地址？</strong></summary>
 
-运行 `tailscale-helper`，选择选项 `8` 切换到 GitHub 直连模式。
+在当前终端运行 `unset GITHUB_DOWNLOAD_BASE_URL`。如果设置过 `/etc/tailscale/github-download.env`，也清除文件中对应的设置，然后重新运行 `tailscale-helper`。
 
 </details>
 
@@ -374,14 +346,6 @@ cat /tmp/tailscale_update.log
 
 ## 贡献与支持
 
-- [提交问题](https://github.com/CH3NGYZ/small-tailscale-openwrt/issues)
-- [功能建议与讨论](https://github.com/CH3NGYZ/small-tailscale-openwrt/discussions)
+- [提交问题或功能建议](https://github.com/xubiaolin/small-tailscale-client/issues)
+- [上游项目与原作者 CH3NGYZ](https://github.com/CH3NGYZ/small-tailscale-openwrt)
 - [MIT License](LICENSE)
-
----
-
-<div align="center">
-
-**v1.1.0** · 最后更新于 2026-07-31 · 维护者 CH3NGYZ
-
-</div>

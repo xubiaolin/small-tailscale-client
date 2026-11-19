@@ -7,33 +7,13 @@ SCRIPT_VERSION="v1.2.3"
 # 检查并引入 /etc/tailscale/tools.sh 文件
 [ -f /etc/tailscale/tools.sh ] && . /etc/tailscale/tools.sh
 safe_source "$INST_CONF"
-apply_github_mode
 ensure_arch || exit 1
 
-HELPER_SCRIPT_URL_SUFFIX="CH3NGYZ/small-tailscale-openwrt/raw/refs/heads/main/scripts/helper.sh"
-INSTALL_SCRIPT_URL_SUFFIX="CH3NGYZ/small-tailscale-openwrt/raw/refs/heads/main/install.sh"
-
-get_remote_version() {
-    local remote_ver_url="${CUSTOM_RAW_PROXY}/${HELPER_SCRIPT_URL_SUFFIX}"
-    local tmp_helper="/tmp/helper_remote.$$"
-    log_info "获取远程文件: ${remote_ver_url}"
-    if webget "$tmp_helper" "$remote_ver_url" "echooff"; then
-        grep -E '^SCRIPT_VERSION=' "$tmp_helper" | cut -d'"' -f2 > "$REMOTE_SCRIPTS_VERSION_FILE"
-    fi
-    rm -f "$tmp_helper"
-}
+INSTALL_SCRIPT_URL_SUFFIX="xubiaolin/small-tailscale-client/raw/refs/heads/main/install.sh"
 
 # 显示菜单
 show_menu() {
     log_info "🎉  欢迎使用 Tailscale on OpenWRT 管理脚本 $SCRIPT_VERSION"
-    if [ ! -s "$REMOTE_SCRIPTS_VERSION_FILE" ]; then
-        log_info "⚠️  无法获取远程脚本版本"
-    else
-        remote_version=$(cat "$REMOTE_SCRIPTS_VERSION_FILE")
-        log_info "📦  远程脚本版本: $remote_version $( 
-            [ "$remote_version" != "$SCRIPT_VERSION" ] && echo '🚨脚本有更新, 请使用 13) 更新脚本包' || echo '✅已是最新' 
-        )"
-    fi
     log_info "------------------------------------------"
     log_info "      1).  💾 安装 / 重装 Tailscale"
     log_info "------------------------------------------"
@@ -44,11 +24,11 @@ show_menu() {
     log_info "------------------------------------------"
     log_info "      6).  🔄 管理 Tailscale 自动更新"
     log_info "      7).  🔄 手动运行更新脚本"
-    log_info "      8).  🔄 切换代理/直连状态"
+    log_info "      8).  🌐 查看 GitHub 下载地址"
     log_info "      9).  📦 查看本地 Tailscale 存在版本"
     log_info "     10).  📦 查看远程 Tailscale 最新版本"
     log_info "     11).  🔔 管理推送通知"
-    log_info "     12).  📊 排序代理池"
+    log_info "     12).  📊 测试配置的下载镜像"
     log_info "     13).  🛠️ 更新脚本包"
     log_info "     14).  📜 显示 Tailscale 更新日志"
     log_info "------------------------------------------"
@@ -217,13 +197,13 @@ handle_choice() {
             read _
             ;;
         13)
-            URL="${CUSTOM_RAW_PROXY}/${INSTALL_SCRIPT_URL_SUFFIX}"
+            URL="${GITHUB_DOWNLOAD_BASE_URL}/${INSTALL_SCRIPT_URL_SUFFIX}"
             tmpfile=$(mktemp)
             if webget "$tmpfile" "$URL" "echooff"; then
                 # exec 会替换当前进程，不会返回
                 exec sh "$tmpfile" < /dev/tty
             else
-                log_error "❌ 脚本下载失败, 脚本内置作者的代理失效"
+                log_error "❌ 脚本下载失败，请检查网络和下载地址"
                 rm -f "$tmpfile"
                 log_info "✅  请按回车继续..." 1
                 read _
@@ -257,13 +237,8 @@ handle_choice() {
     esac
 }
 
-# 主循环前执行一次远程版本检测
-clear
-log_info "🔄  正在检测脚本更新, 最多需要 5 秒..."
-get_remote_version
-clear
-
 # 主循环
+clear
 while true; do
     show_menu
     log_info "✅  请输入你的选择: " 1

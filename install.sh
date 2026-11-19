@@ -9,28 +9,18 @@ set -o pipefail 2>/dev/null || true
 TIME_OUT=20
 CONFIG_DIR="/etc/tailscale"
 mkdir -p "$CONFIG_DIR"
-INST_CONF="$CONFIG_DIR/install.conf"
-
-# -------------------- GitHub 直连/代理模式 --------------------
-if [ -f /tmp/tailscale-use-direct ]; then
-    rm -f /tmp/tailscale-use-direct
-    GITHUB_DIRECT=true
-    CUSTOM_RAW_PROXY="https://github.com"
-else
-    GITHUB_DIRECT=false
-    CUSTOM_RAW_PROXY="https://gh.ch3ng.top"
+# 安装脚本独立运行，此时脚本包中的 tools.sh 可能尚未安装。
+if [ -r "$CONFIG_DIR/github-download.env" ]; then
+    : "${GITHUB_DOWNLOAD_BASE_URL=$(sed -n 's/^GITHUB_DOWNLOAD_BASE_URL=//p' "$CONFIG_DIR/github-download.env" | tail -n 1)}"
 fi
-
-# 写入最小配置，供后续脚本使用
-printf 'GITHUB_DIRECT=%s\n' "$GITHUB_DIRECT" > "$INST_CONF"
+GITHUB_DOWNLOAD_BASE_URL=${GITHUB_DOWNLOAD_BASE_URL:-https://github.com}
 
 SCRIPTS_TGZ_PATH="/tmp/tailscale-openwrt-scripts.tar.gz"
-SCRIPTS_TGZ_URL_SUFFIX="CH3NGYZ/small-tailscale-openwrt/raw/refs/heads/main/tailscale-openwrt-scripts.tar.gz"
-PRETEST_MIRRORS_SH_URL_SUFFIX="CH3NGYZ/small-tailscale-openwrt/raw/refs/heads/main/pretest_mirrors.sh"
+SCRIPTS_TGZ_URL_SUFFIX="xubiaolin/small-tailscale-client/raw/refs/heads/main/tailscale-openwrt-scripts.tar.gz"
 
 # 预先计算的校验和（由 GitHub Actions 自动回填）
-EXPECTED_CHECKSUM_SHA256="bde5bc05ce1a6e109f79f944d035830eb45fd631ac98e9c582bd6c680df41f82"
-EXPECTED_CHECKSUM_MD5="cbdc179d76b953f9791de060902baea2"
+EXPECTED_CHECKSUM_SHA256="f578d1ede261bc9dfd2f4d330b6d52945d3f6ce2a2af6141c712440366b6d46e"
+EXPECTED_CHECKSUM_MD5="b1a3d7feb57131c2d025f3a31bdd20db"
 
 # -------------------- 日志 --------------------
 log_info() {
@@ -160,13 +150,8 @@ sync_time || true
 # 先缓存已安装包列表（避免循环中多次调用包管理器）
 INSTALLED_PKGS=$(pkg_list_installed 2>/dev/null || true)
 
-# jq 可选：脚本内置 grep/sed 回退
-JQ_REQUIRED=0
-JQ_AVAILABLE=1
-
 # 依赖包列表（按包管理器区分）
 REQUIRED_PACKAGES=""
-OPTIONAL_PACKAGES=""
 
 case "$PKG_MGR" in
     opkg)
@@ -179,11 +164,9 @@ case "$PKG_MGR" in
 
         REQUIRED_PACKAGES="ca-bundle kmod-tun coreutils-timeout coreutils-nohup curl"
         [ "$SKIP_OPENSSL" -eq 0 ] && REQUIRED_PACKAGES="libustream-openssl $REQUIRED_PACKAGES"
-        OPTIONAL_PACKAGES="jq"
         ;;
     apk)
         REQUIRED_PACKAGES="ca-certificates curl coreutils-timeout coreutils-nohup"
-        OPTIONAL_PACKAGES="jq"
         ;;
     *)
         log_error "❌  不支持的包管理器: $PKG_MGR"
@@ -192,7 +175,7 @@ case "$PKG_MGR" in
 esac
 
 need_install=0
-for package in $REQUIRED_PACKAGES $OPTIONAL_PACKAGES; do
+for package in $REQUIRED_PACKAGES; do
     if ! pkg_is_installed "$package"; then
         log_warn "⚠️  包 $package 未安装"
         need_install=1
@@ -207,7 +190,7 @@ if [ "$need_install" -eq 1 ]; then
         log_info "✅  $PKG_MGR update 成功"
     fi
 
-    for package in $REQUIRED_PACKAGES $OPTIONAL_PACKAGES; do
+    for package in $REQUIRED_PACKAGES; do
         if pkg_is_installed "$package"; then
             continue
         fi
@@ -216,13 +199,6 @@ if [ "$need_install" -eq 1 ]; then
         if pkg_install "$package" 2>&1; then
             log_info "✅  包 $package 安装成功"
         else
-            # 针对 jq：允许失败
-            if [ "$package" = "jq" ] && [ "$JQ_REQUIRED" -eq 0 ]; then
-                JQ_AVAILABLE=0
-                log_warn "⚠️  安装 jq 失败，将使用回退解析方式，继续执行"
-                continue
-            fi
-
             # coreutils-timeout / coreutils-nohup 失败：尝试 coreutils
             if [ "$PKG_MGR" = "opkg" ] && { [ "$package" = "coreutils-timeout" ] || [ "$package" = "coreutils-nohup" ]; }; then
                 alt="coreutils"
@@ -353,7 +329,7 @@ verify_checksum() {
 }
 
 # -------------------- 下载脚本包并校验 --------------------
-scripts_tgz_url="${CUSTOM_RAW_PROXY}/${SCRIPTS_TGZ_URL_SUFFIX}"
+scripts_tgz_url="${GITHUB_DOWNLOAD_BASE_URL%/}/${SCRIPTS_TGZ_URL_SUFFIX}"
 
 if webget "$SCRIPTS_TGZ_PATH" "$scripts_tgz_url" "echooff"; then
     log_info "📥  下载成功: $scripts_tgz_url"
@@ -390,6 +366,14 @@ log_info "✅  下载脚本包 + 校验成功!"
 log_info "📦  解压脚本包..."
 tar -xzf "$SCRIPTS_TGZ_PATH" -C "$CONFIG_DIR"
 
+[ -f "$CONFIG_DIR/install.conf" ] || printf '# Tailscale 安装配置\n' > "$CONFIG_DIR/install.conf"
+
+# 升级旧安装时，移除原先由 setup_cron.sh 生成的每日代理池测速任务。
+old_mirror_job='^[0-9]+ [23] \* \* \* /etc/tailscale/test_mirrors\.sh$'
+if current_crontab=$(crontab -l 2>/dev/null) && printf '%s\n' "$current_crontab" | grep -Eq "$old_mirror_job"; then
+    printf '%s\n' "$current_crontab" | sed -E "\\|$old_mirror_job|d" | crontab -
+fi
+
 # 设置权限（避免通配符未匹配导致失败）
 find "$CONFIG_DIR" -maxdepth 1 -type f -name '*.sh' -exec chmod +x {} \;
 
@@ -417,40 +401,6 @@ NTFY_KEY=""
 NOTIFY_PUSHPLUS=0
 PUSHPLUS_TOKEN=""
 EOF
-
-run_pretest_mirrors() {
-    pretest_mirrors_sh_url="${CUSTOM_RAW_PROXY}/${PRETEST_MIRRORS_SH_URL_SUFFIX}"
-    log_info "🔄  下载 $pretest_mirrors_sh_url 并执行测速..."
-
-    if webget "/tmp/pretest_mirrors.sh" "$pretest_mirrors_sh_url" "echooff"; then
-        sh /tmp/pretest_mirrors.sh
-    else
-        log_error "❌  下载 pretest_mirrors.sh 失败, 请重试!"
-        return 1
-    fi
-}
-
-if [ "$GITHUB_DIRECT" = "true" ]; then
-    log_info "✅  使用 GitHub 直连, 跳过测速！"
-else
-    # proxies.txt 不存在或为空时才重新下载/测速
-    if [ ! -s "$CONFIG_DIR/proxies.txt" ]; then
-        log_info "🔍  本地不存在 proxies.txt(或为空), 将下载镜像列表并测速, 请等待..."
-        run_pretest_mirrors
-        ret=$?
-        if [ "$ret" -eq 0 ]; then
-            log_info "✅  下载镜像列表并测速完成！"
-        elif [ "$ret" -eq 10 ]; then
-            log_info "👋  用户取消安装"
-            exit 0
-        else
-            log_error "❌  下载或测速失败, 无法继续!"
-            exit 1
-        fi
-    else
-        log_info "✅  本地存在 proxies.txt, 无需再次下载!"
-    fi
-fi
 
 log_info "✅  配置工具安装完毕!"
 log_info "✅  运行 tailscale-helper 可以打开功能菜单"

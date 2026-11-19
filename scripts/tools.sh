@@ -6,10 +6,6 @@ LOG_FILE="/var/log/tailscale_install.log"
 VERSION_FILE="$CONFIG_DIR/current_version"
 NTF_CONF="$CONFIG_DIR/notify.conf"
 INST_CONF="$CONFIG_DIR/install.conf"
-MIRROR_LIST="$CONFIG_DIR/proxies.txt"
-VALID_MIRRORS="$CONFIG_DIR/valid_proxies.txt"
-TMP_VALID_MIRRORS="/tmp/valid_mirrors.tmp"
-REMOTE_SCRIPTS_VERSION_FILE="$CONFIG_DIR/remote_ts_scripts_version"
 TIME_OUT=30
 
 # 架构探测（统一入口）
@@ -73,23 +69,12 @@ ensure_arch() {
     ARCH="$(detect_arch)" || return 1
 }
 
-# GitHub 代理模式配置
-set_direct_mode() {
-    CUSTOM_RELEASE_PROXY="https://github.com"
-    CUSTOM_RAW_PROXY="https://github.com"
-    CUSTOM_API_PROXY="https://api.github.com"
-}
-
-set_proxy_mode() {
-    CUSTOM_RELEASE_PROXY="https://gh.ch3ng.top"
-    CUSTOM_RAW_PROXY="https://gh.ch3ng.top"
-    CUSTOM_API_PROXY="https://ghapi.ch3ng.top"
-}
-
-# 根据配置自动设置模式
-apply_github_mode() {
-    [ "$GITHUB_DIRECT" = "true" ] && set_direct_mode || set_proxy_mode
-}
+# 进程环境优先。定时任务和开机更新也可以读取同一份 NAME=URL 配置。
+if [ -r "$CONFIG_DIR/github-download.env" ]; then
+    : "${GITHUB_DOWNLOAD_BASE_URL=$(sed -n 's/^GITHUB_DOWNLOAD_BASE_URL=//p' "$CONFIG_DIR/github-download.env" | tail -n 1)}"
+fi
+GITHUB_DOWNLOAD_BASE_URL=${GITHUB_DOWNLOAD_BASE_URL:-https://github.com}
+GITHUB_DOWNLOAD_BASE_URL=${GITHUB_DOWNLOAD_BASE_URL%/}
 
 # 初始化日志系统
 log_info() {

@@ -1,10 +1,12 @@
-# Tailscale on OpenWRT Management Tools
+# small-tailscale-client
 
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 ![Version](https://img.shields.io/badge/version-v1.1.0-brightgreen)
 ![Shell](https://img.shields.io/badge/shell-sh-blue)
 
-A comprehensive solution for installing, configuring, and managing Tailscale on OpenWRT. Provides automated installation, version management, proxy switching, push notifications, and more.
+`small-tailscale-client` installs and manages Tailscale on OpenWrt routers. The `tailscale-helper` menu lets you install Tailscale on local storage or in RAM and configure automatic updates.
+
+The installer downloads the management scripts from this repository. To install the latest release, it reads the upstream `version.txt`, downloads the binary for your router’s architecture, and verifies its checksum. [Upstream Tailscale builds](https://github.com/CH3NGYZ/small-tailscale-openwrt/releases)
 
 ## 📋 Table of Contents
 
@@ -23,12 +25,10 @@ A comprehensive solution for installing, configuring, and managing Tailscale on 
 
 - **🚀 One-Click Installation** - Automated installation process with local and memory modes
 - **🔄 Auto Update** - Scheduled version detection and automatic Tailscale updates
-- **🌐 Proxy Management** - Intelligent mirror speed testing with automatic fastest source selection
-- **🔌 Direct Connection Toggle** - Quick switch between GitHub direct connection and proxy modes
-- **📦 Version Management** - Flexible version selection with support for specific version installation
+- **🌐 GitHub downloads** - Use GitHub directly by default or set a download mirror with `GITHUB_DOWNLOAD_BASE_URL`
+- **📦 Version Management** - Install the latest upstream release by default or specify a release tag on the command line
 - **🔔 Push Notifications** - Multiple notification methods (Server Chan, Bark, NTFY, PushPlus)
 - **⚙️ Multi-Architecture Support** - Compatible with x86, ARM, MIPS and other architectures
-- **📊 Mirror Ranking** - Periodic speed testing and automatic proxy pool sorting
 - **🛠️ Script Updates** - Online update support for management script packages
 
 ## 🚀 Quick Start
@@ -43,32 +43,18 @@ A comprehensive solution for installing, configuring, and managing Tailscale on 
 
 1. **Download and execute the installation script**
 
-```bash
-# PROXY (Recommended for Chinese Users)
-rm -rf /etc/tailscale /tmp/tailscale-use-direct /tmp/install.sh
-URL="https://gh.ch3ng.top/CH3NGYZ/small-tailscale-openwrt/raw/refs/heads/main/install.sh"
-(command -v curl >/dev/null && curl -fSL "$URL" -o /tmp/install.sh || wget "$URL" -O /tmp/install.sh) || { echo 下载失败; exit 1; }
-sh /tmp/install.sh || { echo 执行失败; exit 1; }
+Run the commands in the same shell on your router. If GitHub downloads are slow, use the mirror in the first line. Skip the `export` line to use GitHub directly with the default settings.
 
+```sh
+export GITHUB_DOWNLOAD_BASE_URL='https://git.mirrors.imoyuapp.win/https://github.com'
+download_base=${GITHUB_DOWNLOAD_BASE_URL:-https://github.com}
+URL="${download_base%/}/xubiaolin/small-tailscale-client/raw/refs/heads/main/install.sh"
+(curl -fL "$URL" -o /tmp/install.sh || wget -O /tmp/install.sh "$URL") && sh /tmp/install.sh
 ```
 
-Or use GitHub direct connection:
+2. **Install Tailscale**
 
-```bash
-# DIRECT
-rm -rf /etc/tailscale /tmp/install.sh
-touch /tmp/tailscale-use-direct
-URL="https://github.com/CH3NGYZ/small-tailscale-openwrt/raw/refs/heads/main/install.sh"
-(command -v curl >/dev/null && curl -fSL "$URL" -o /tmp/install.sh || wget "$URL" -O /tmp/install.sh) || { echo 下载失败; exit 1; }
-sh /tmp/install.sh || { echo 执行失败; exit 1; }
-
-```
-
-2. **Follow the prompts to complete installation**
-
-   - Select installation mode (Local/Memory)
-   - Choose whether to enable auto-update
-   - Select Tailscale version
+   Choose option `1` in the menu, select local or memory installation, and choose whether to enable auto-update. The installer then downloads the latest upstream release. To install a specific version, run `/etc/tailscale/setup.sh --version=TAG` with the desired release tag.
 
 3. **Open the management menu**
 
@@ -111,8 +97,8 @@ tailscale-helper
 | Script Name                                | Function                                                                                                 | Invocation                    |
 | ------------------------------------------ | -------------------------------------------------------------------------------------------------------- | ----------------------------- |
 | [`install.sh`](install.sh)                 | Main installation script, handles dependency checking, package download, verification and initialization | `sh install.sh`               |
-| [`pretest_mirrors.sh`](pretest_mirrors.sh) | Mirror pre-testing, downloads verification files, proxy lists and performs speed testing                 | Called by install.sh          |
-| [`setup.sh`](scripts/setup.sh)             | Tailscale installation configuration, selects mode, version and update strategy                          | `tailscale-helper` → Option 1 |
+| [`pretest_mirrors.sh`](pretest_mirrors.sh) | Run the installed download mirror test | Legacy installation entry point          |
+| [`setup.sh`](scripts/setup.sh)             | Select the installation mode and update settings, then install Tailscale | `tailscale-helper` → Option 1 |
 | [`helper.sh`](scripts/helper.sh)           | Main menu script providing 14 functional options in interactive interface                                | `tailscale-helper`            |
 
 ### Management Scripts
@@ -121,15 +107,15 @@ tailscale-helper
 | ------------------------------------------------------ | --------------------------------------------------------- | ----------------------------------- |
 | [`update_ctl.sh`](scripts/update_ctl.sh)               | Auto-update toggle control                                | `tailscale-helper` → Option 6       |
 | [`autoupdate.sh`](scripts/autoupdate.sh)               | Auto-update execution logic, detects and updates versions | Scheduled task or manual invocation |
-| [`github_direct_ctl.sh`](scripts/github_direct_ctl.sh) | GitHub direct connection/proxy mode toggle                | `tailscale-helper` → Option 8       |
-| [`test_mirrors.sh`](scripts/test_mirrors.sh)           | Mirror speed testing and ranking                          | `tailscale-helper` → Option 12      |
+| [`github_direct_ctl.sh`](scripts/github_direct_ctl.sh) | Show the active GitHub download URL                | `tailscale-helper` → Option 8       |
+| [`test_mirrors.sh`](scripts/test_mirrors.sh)           | Test the configured download mirror and verify the file                          | `tailscale-helper` → Option 12      |
 
 ### Service Scripts
 
 | Script Name                                    | Function                                                        | Invocation                    |
 | ---------------------------------------------- | --------------------------------------------------------------- | ----------------------------- |
 | [`setup_service.sh`](scripts/setup_service.sh) | Generate and start Tailscale service                            | Called by setup.sh            |
-| [`setup_cron.sh`](scripts/setup_cron.sh)       | Configure scheduled tasks (mirror maintenance, auto-update)     | Called by setup.sh            |
+| [`setup_cron.sh`](scripts/setup_cron.sh)       | Schedule automatic updates     | Called by setup.sh            |
 | [`uninstall.sh`](scripts/uninstall.sh)         | Complete uninstallation of Tailscale and related configurations | `tailscale-helper` → Option 5 |
 
 ### Utility Scripts
@@ -145,7 +131,7 @@ tailscale-helper
 
 ### Main Menu (tailscale-helper)
 
-Execute `tailscale-helper` to open the main menu with the following options:
+The `tailscale-helper` menu opens offline. Choose option `10` to look up the latest upstream release.
 
 ```
 1).  💾 Install / Reinstall Tailscale
@@ -155,11 +141,11 @@ Execute `tailscale-helper` to open the main menu with the following options:
 5).  ❌ Uninstall Tailscale
 6).  🔄 Manage Tailscale auto-update
 7).  🔄 Manually run update script
-8).  🔄 Toggle proxy/direct connection mode
+8).  🔄 Show GitHub download URL
 9).  📦 View local Tailscale version
 10). 📦 View remote Tailscale latest version
 11). 🔔 Manage push notifications
-12). 📊 Sort proxy pool
+12). 📊 Test configured download mirror
 13). 🛠️ Update script package
 14). 📜 Display Tailscale update log
 0).  ⛔ Exit
@@ -175,25 +161,7 @@ tailscale-helper
 # Select option 6 to manage Tailscale auto-update
 ```
 
-### Proxy Switching Guide
-
-Toggle between GitHub direct connection and proxy modes:
-
-**Switch via menu**:
-
-```bash
-tailscale-helper
-# Select option 8 to toggle proxy/direct connection mode
-```
-
-### Mirror Speed Testing
-
-Manually test speed and rank proxy pool:
-
-```bash
-tailscale-helper
-# Select option 12 to sort proxy pool
-```
+Menu option 8 shows the active GitHub download URL. Option 12 tests the configured download mirror.
 
 ## ⚙️ Configuration Guide
 
@@ -205,8 +173,7 @@ All configuration files are stored in `/etc/tailscale/` directory:
 /etc/tailscale/
 ├── install.conf          # Installation configuration (mode, version, architecture, etc.)
 ├── notify.conf           # Notification configuration (push service keys)
-├── proxies.txt           # Proxy list
-├── valid_proxies.txt     # Valid proxy list (speed test results)
+├── github-download.env   # Optional GitHub download URL for boot services and scheduled updates
 ├── current_version       # Current Tailscale version
 └── scripts/              # All management scripts
 ```
@@ -228,9 +195,6 @@ ARCH=amd64
 
 # Device hostname
 HOST_NAME=OpenWrt
-
-# GitHub direct connection mode: true or false
-GITHUB_DIRECT=false
 
 # Installation timestamp
 TIMESTAMP=1234567890
@@ -273,56 +237,25 @@ PUSHPLUS_TOKEN=""
 
 ### Scheduled Tasks
 
-The system automatically configures two scheduled tasks:
+The installer schedules `/etc/tailscale/autoupdate.sh` to run daily. Use `crontab -l` to see the scheduled time.
 
-```bash
-# Mirror maintenance task (random time between 2-3 AM)
-$RANDOM_MIN $RANDOM_HOUR * * * /etc/tailscale/test_mirrors.sh
+## GitHub download URLs
 
-# Auto-update task (random time between 4-6 AM)
-$UPDATE_MIN $UPDATE_HOUR * * * /etc/tailscale/autoupdate.sh
+The default download URL is `https://github.com`. Installation and automatic updates read `releases/latest/download/version.txt` from `CH3NGYZ/small-tailscale-openwrt`, then download the checksum and binary for that release.
+
+To use a mirror for scripts and release files, export `GITHUB_DOWNLOAD_BASE_URL` before running the installation commands or `tailscale-helper`. A trailing slash is optional. For mirrors that expect a full GitHub URL in the path, append `/https://github.com` to the mirror URL.
+
+```sh
+export GITHUB_DOWNLOAD_BASE_URL='https://git.mirrors.imoyuapp.win/https://github.com'
 ```
 
-View scheduled tasks:
+This setting applies to the current shell and its child processes. For boot services and scheduled updates, put the same variable in `/etc/tailscale/github-download.env`. The file takes plain text assignments.
 
-```bash
-crontab -l
+```text
+GITHUB_DOWNLOAD_BASE_URL=https://git.mirrors.imoyuapp.win/https://github.com
 ```
 
-## 🌐 Proxy Switching
-
-### Direct Connection Mode
-
-Connect directly to GitHub without proxy:
-
-```bash
-tailscale-helper
-# Select option 8 to toggle proxy/direct connection mode
-```
-
-**Advantages**: Fast speed, no proxy latency
-**Disadvantages**: May be restricted by GFW
-
-### Proxy Mode
-
-Download through proxy mirrors:
-
-```bash
-tailscale-helper
-# Select option 8 to toggle proxy/direct connection mode
-```
-
-**Advantages**: Stable and reliable, supports domestic access
-**Disadvantages**: May have latency
-
-### Automatic Mirror Speed Testing
-
-The system periodically tests proxy pool and automatically selects the fastest mirror:
-
-```bash
-tailscale-helper
-# Select option 12 to sort proxy pool
-```
+The environment variable takes precedence over the file. An empty value selects the official URL for that process. For example, run `GITHUB_DOWNLOAD_BASE_URL= tailscale-helper` to use the official download URL for one session.
 
 ## ❓ FAQ
 
@@ -332,7 +265,7 @@ tailscale-helper
 
 ```bash
 opkg update
-opkg install libustream-openssl ca-bundle kmod-tun coreutils-timeout coreutils-nohup curl jq
+opkg install libustream-openssl ca-bundle kmod-tun coreutils-timeout coreutils-nohup curl
 ```
 
 ### Q2: How to switch installation modes?
@@ -362,15 +295,9 @@ tailscale-helper
 # Select option 7 to manually run update script
 ```
 
-### Q5: What if all proxies fail?
+### Q5: How do I switch back to the official GitHub download URL?
 
-**A**: Switch to GitHub direct connection mode:
-
-```bash
-# Via menu
-tailscale-helper
-# Select option 8 to toggle proxy/direct connection mode
-```
+Run `unset GITHUB_DOWNLOAD_BASE_URL` in your shell. If you set the variable in `/etc/tailscale/github-download.env`, remove its assignment there too. Then start `tailscale-helper` again.
 
 ### Q6: How to uninstall Tailscale?
 
@@ -481,7 +408,7 @@ tailscale-helper
 | Notification Type | Trigger Condition              | Configuration Item   |
 | ----------------- | ------------------------------ | -------------------- |
 | Update Success    | Tailscale successfully updated | `NOTIFY_UPDATE`      |
-| Mirror Failure    | All proxy mirrors failed       | `NOTIFY_MIRROR_FAIL` |
+| Mirror Failure    | The configured download mirror failed its test       | `NOTIFY_MIRROR_FAIL` |
 | Emergency Error   | Update or installation failed  | `NOTIFY_EMERGENCY`   |
 
 ### Configure Notifications
@@ -507,20 +434,18 @@ This project is licensed under the MIT License. See [LICENSE](LICENSE) file for 
 
 Issues and Pull Requests are welcome!
 
-- **Report Bugs**: https://github.com/CH3NGYZ/small-tailscale-openwrt/issues
-- **Feature Requests**: https://github.com/CH3NGYZ/small-tailscale-openwrt/discussions
+- [Report a bug or request a feature](https://github.com/xubiaolin/small-tailscale-client/issues)
 
 ### Acknowledgments
 
-Thanks to all contributors and users for their support!
+This project builds on CH3NGYZ’s OpenWrt installer and uses the binaries released by that project. [Upstream project](https://github.com/CH3NGYZ/small-tailscale-openwrt)
 
 ## 📞 Technical Support
 
-- **GitHub Issues**: https://github.com/CH3NGYZ/small-tailscale-openwrt/issues
-- **Discussions**: https://github.com/CH3NGYZ/small-tailscale-openwrt/discussions
+- [GitHub Issues](https://github.com/xubiaolin/small-tailscale-client/issues)
 
 ---
 
 **Version**: v1.1.0  
 **Last Updated**: 2026-02-13  
-**Maintainer**: CH3NGYZ
+**Upstream author**: CH3NGYZ

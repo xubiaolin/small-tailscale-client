@@ -7,9 +7,6 @@ log_info "加载公共函数..."
 
 log_info "加载配置文件..."
 safe_source "$INST_CONF" || log_warn "⚠️  INST_CONF 未找到或无效，使用默认配置"
-apply_github_mode
-
-GITHUB_API_RELEASE_LIST_URL_SUFFIX="repos/ch3ngyz/small-tailscale-openwrt/releases"
 
 # 默认值
 MODE=""
@@ -19,11 +16,6 @@ ARCH=$(detect_arch)
 HOST_NAME=$(uci show system.@system[0].hostname | awk -F"'" '{print $2}')
 
 has_args=false  # 🔧  新增：标记是否传入了参数
-if [ "$GITHUB_DIRECT" = "true" ] ; then
-    GITHUB_DIRECT=true
-else
-    GITHUB_DIRECT=false
-fi
 
 # 若有参数, 接受 --tmp为使用内存模式, --auto-update为自动更新
 while [ $# -gt 0 ]; do
@@ -65,105 +57,6 @@ if [ "$has_args" = false ]; then
         2|"n"|"N") AUTO_UPDATE=false ;;
         *) log_error "⛔  已取消安装"; exit 1 ;;
     esac
-    log_info
-
-    PAGE=1
-    PER_PAGE=10
-
-    while true; do
-        clear
-        log_info "🧩 正在拉取版本列表（第 $PAGE 页，每页 $PER_PAGE 条）..."
-
-        API_URL="${CUSTOM_API_PROXY}/${GITHUB_API_RELEASE_LIST_URL_SUFFIX}?per_page=${PER_PAGE}&page=${PAGE}"
-        retry=0
-        while [ $retry -lt 3 ]; do
-            if webget "/tmp/response.json" "$API_URL"; then
-                break
-            fi
-            retry=$((retry + 1))
-            log_error "❌ 拉取失败（$retry/3），重试中..."
-            sleep 1
-        done
-
-        if [ $retry -ge 3 ]; then
-            log_error "❌ 连续 3 次失败，取消操作"
-            exit 1
-        fi
-
-        # 从返回解析 tags
-        TAGS_TMP="/tmp/.tags.$$"
-        if command -v jq >/dev/null 2>&1; then
-            jq -r '.[].tag_name // empty' /tmp/response.json > "$TAGS_TMP"
-        else
-            grep -o '"tag_name"[ ]*:[ ]*"[^"]*"' /tmp/response.json \
-                | sed 's/.*"tag_name"[ ]*:[ ]*"\([^"]*\)".*/\1/' \
-                > "$TAGS_TMP"
-        fi
-        rm -f /tmp/response.json
-
-        # 判断是否有 tags
-        if [ ! -s "$TAGS_TMP" ]; then
-            log_info "⚠️ 本页没有更多版本了"
-            log_info "➡️ 输入 p 返回上一页，或 q 退出"
-            read op
-            case "$op" in
-                p|P) [ "$PAGE" -gt 1 ] && PAGE=$((PAGE - 1)) ;;
-                q|Q) exit 1 ;;
-            esac
-            continue
-        fi
-
-        # 展示本页 tags
-        i=1
-        log_info
-        log_info "🔧 可用版本列表（第 $PAGE 页）："
-        while read -r tag; do
-            log_info "  [$i] $tag"
-            eval "TAG_$i=\"$tag\""
-            i=$((i + 1))
-        done < "$TAGS_TMP"
-        total=$((i - 1))
-
-        log_info ""
-        log_info "⏳ 输入序号选择版本（回车=最新，n=下一页，p=上一页，q=退出）：" 1
-        read input
-        input=$(echo "$input" | xargs)
-
-        case "$input" in
-            "")  # 直接回车 = 使用 latest
-                VERSION="latest"
-                break
-                ;;
-            q|Q)
-                log_error "⛔ 已取消安装"
-                exit 1
-                ;;
-            n|N)
-                PAGE=$((PAGE + 1))
-                continue
-                ;;
-            p|P)
-                [ "$PAGE" -gt 1 ] && PAGE=$((PAGE - 1))
-                continue
-                ;;
-            *)
-                # 选择一个 tag
-                if echo "$input" | grep -qE '^[0-9]+$' \
-                    && [ "$input" -ge 1 ] \
-                    && [ "$input" -le "$total" ]; then
-
-                    eval "VERSION=\$TAG_$input"
-                    log_info "✅ 使用指定版本: $VERSION"
-                    break
-                else
-                    log_error "❌ 无效的选择"
-                    sleep 1
-                fi
-                ;;
-        esac
-    done
-    rm -f "$TAGS_TMP"
-    clear
 fi
 
 
@@ -179,7 +72,6 @@ AUTO_UPDATE=$AUTO_UPDATE
 VERSION=$VERSION
 ARCH=$ARCH
 HOST_NAME=$HOST_NAME
-GITHUB_DIRECT=$GITHUB_DIRECT
 TIMESTAMP=$(date +%s)
 EOF
 
@@ -191,7 +83,7 @@ log_info "🎯  更新: $AUTO_UPDATE"
 log_info "🎯  版本: $VERSION"
 log_info "🎯  架构: $ARCH"
 log_info "🎯  昵称: $HOST_NAME"
-log_info "🎯  直连: $GITHUB_DIRECT"
+log_info "🎯  GitHub 下载地址: $GITHUB_DOWNLOAD_BASE_URL"
 
 echo
 
@@ -221,8 +113,7 @@ fi
 log_info "🚀  开始安装 Tailscale..."
 "$CONFIG_DIR/fetch_and_install.sh" \
     --mode="$MODE" \
-    --version="$VERSION" \
-    --mirror-list="$VALID_MIRRORS"
+    --version="$VERSION"
 
 # 初始化服务
 log_info "🛠️  初始化服务..."

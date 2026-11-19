@@ -2,130 +2,66 @@
 
 set -e
 
-[ -f /etc/tailscale/tools.sh ] && . /etc/tailscale/tools.sh && safe_source "$INST_CONF"
+. /etc/tailscale/tools.sh
+[ ! -s "$INST_CONF" ] || safe_source "$INST_CONF"
 ensure_arch || exit 1
-apply_github_mode
 
-GITHUB_API_LATEST_RELEASE_URL_SUFFIX="repos/CH3NGYZ/small-tailscale-openwrt/releases/latest"
+release_base="$GITHUB_DOWNLOAD_BASE_URL/CH3NGYZ/small-tailscale-openwrt/releases"
 
-# 获取最新版本
 get_latest_version() {
-    local api_url="${CUSTOM_API_PROXY}/${GITHUB_API_LATEST_RELEASE_URL_SUFFIX}"
-    local tmp_json_file="/tmp/github_latest_release.json"
-    local json=""
-    local version=""
-
-    # 使用 webget 下载 JSON
-    if ! webget "$tmp_json_file" "$api_url" "echooff"; then
-        log_error "❌  错误：获取版本信息失败。"
-        return 1
+    local version_file version=""
+    version_file=$(mktemp) || return 1
+    if webget "$version_file" "$release_base/latest/download/version.txt" "echooff"; then
+        version=$(awk '
+            NR == 1 { sub(/\r$/, ""); tag = $0 }
+            END { if (NR == 1 && tag ~ /^v[0-9]+\.[0-9]+\.[0-9]+$/) print tag }
+        ' "$version_file")
     fi
-
-    # 读取 JSON 内容
-    json=$(cat "$tmp_json_file")
-    rm -f "$tmp_json_file"
-
-    # 使用 jq 或 grep/sed 提取 tag_name
-    if command -v jq >/dev/null 2>&1; then
-        version=$(echo "$json" | jq -r '.tag_name // empty')
-    else
-        version=$(echo "$json" \
-            | grep -o '"tag_name"[ ]*:[ ]*"[^"]*"' \
-            | sed 's/.*"tag_name"[ ]*:[ ]*"\([^"]*\)".*/\1/' \
-            | head -n1)
-    fi
-
-    if [ -z "$version" ]; then
-        log_error "❌  错误：版本号为空"
-        return 1
-    fi
-
-    echo "$version"
+    rm -f "$version_file"
+    [ -n "$version" ] || return 1
+    printf '%s\n' "$version"
 }
 
 get_checksum() {
     local sums_file=$1
     local target_name=$2
-    grep "$target_name" "$sums_file" | grep -v "${target_name}.build" | awk '{print $1}'
+    local digest_length=$3
+    awk -v name="$target_name" -v size="$digest_length" \
+        '$2 == name && length($1) == size && $1 ~ /^[[:xdigit:]]+$/ {print $1; exit}' "$sums_file"
 }
-
-download_file() {
-    local url=$1
-    local output=$2
-    local mirror_list=${3:-}
-    local checksum=${4:-}
-
-    if [ "$GITHUB_DIRECT" = "true" ] ; then
-        log_info "📄  使用 GitHub 直连: https://github.com/$url"
-        if webget "$output" "https://github.com/$url" "echooff"; then
-            [ -n "$checksum" ] && verify_checksum "$output" "$checksum"
-            return 0
-        else
-            return 1
-        fi
-    fi
-
-    if [ -f "$mirror_list" ]; then
-        while read -r mirror; do
-            mirror=$(echo "$mirror" | sed 's|/*$|/|')
-            log_info "🔗  使用代理镜像下载: ${mirror}${url}"
-            if webget "$output" "${mirror}${url}" "echooff"; then
-                if [ -n "$checksum" ]; then
-                    if verify_checksum "$output" "$checksum"; then
-                        return 0
-                    else
-                        log_warn "⚠️  校验失败，尝试下一个镜像..."
-                    fi
-                else
-                    return 0
-                fi
-            fi
-        done < "$mirror_list"
-    fi
-
-    log_info "🔗  镜像全部失败，尝试 GitHub 直连: https://github.com/$url"
-    if webget "$output" "https://github.com/$url" "echooff"; then
-        [ -n "$checksum" ] && verify_checksum "$output" "$checksum"
-        return 0
-    else
-        return 1
-    fi
-}
-
 
 # 主安装流程
 install_tailscale() {
     local version=$1
     local mode=$2
-    local mirror_list=$3
 
     local arch="$ARCH"
     local tailscale_temp_path="/tmp/tailscaled.$$"
     local release_arch_filename="tailscaled-linux-$arch"
-    local release_version_suffix="CH3NGYZ/small-tailscale-openwrt/releases/download/$version"
+    local release_url="$release_base/download/$version"
 
     log_info "🔗  准备校验文件..."
-    sha_file="/tmp/SHA256SUMS.$$"
-    md5_file="/tmp/MD5SUMS.$$"
+    local sum_file checksum
+    sum_file=$(mktemp)
+    checksum=""
+    if webget "$sum_file" "$release_url/SHA256SUMS.txt" "echooff"; then
+        checksum=$(get_checksum "$sum_file" "$release_arch_filename" 64)
+    fi
+    if [ -z "$checksum" ] && webget "$sum_file" "$release_url/MD5SUMS.txt" "echooff"; then
+        checksum=$(get_checksum "$sum_file" "$release_arch_filename" 32)
+    fi
+    rm -f "$sum_file"
+    if [ -z "$checksum" ]; then
+        log_error "❌  无法获取 $release_arch_filename 的校验值"
+        return 1
+    fi
 
-    # 下载校验文件
-    download_file "${release_version_suffix}/SHA256SUMS.txt" "$sha_file" "$mirror_list" || log_warn "⚠️  无法获取 SHA256 校验文件"
-    download_file "${release_version_suffix}/MD5SUMS.txt" "$md5_file" "$mirror_list" || log_warn "⚠️  无法获取 MD5 校验文件"
-
-    sha256=""
-    md5=""
-    [ -s "$sha_file" ] && sha256=$(get_checksum "$sha_file" "$release_arch_filename")
-    [ -s "$md5_file" ] && md5=$(get_checksum "$md5_file" "$release_arch_filename")
-
-    # 下载主程序并校验
     log_info "🔗  正在下载 Tailscale $version ($arch)..."
-    if ! download_file "$release_version_suffix/$release_arch_filename" "$tailscale_temp_path" "$mirror_list" "$sha256"; then
-        log_warn "⚠️  SHA256 校验失败，尝试使用 MD5..."
-        if ! download_file "$release_version_suffix/$release_arch_filename" "$tailscale_temp_path" "$mirror_list" "$md5"; then
-            log_error "❌  校验失败，安装中止"
-            rm -f "$tailscale_temp_path"
-            exit 1
-        fi
+    if ! webget "$tailscale_temp_path" "$release_url/$release_arch_filename" "echooff" ||
+       ! verify_checksum "$tailscale_temp_path" "$checksum"; then
+        log_error "❌  下载或校验失败，安装中止"
+        rm -f "$tailscale_temp_path"
+        return 1
     fi
 
     # 安装
@@ -149,37 +85,30 @@ install_tailscale() {
 # 参数解析
 MODE="local"
 VERSION="latest"
-MIRROR_LIST=""
 DRY_RUN=false
 
 while [ $# -gt 0 ]; do
     case "$1" in
         --mode=*) MODE="${1#*=}"; shift ;;
         --version=*) VERSION="${1#*=}"; shift ;;
-        --mirror-list=*) MIRROR_LIST="${1#*=}"; shift ;;
+        --mirror-list=*) shift ;;  # 兼容旧调用，下载地址由环境变量决定
         --dry-run) DRY_RUN=true; shift ;;
         *) log_error "未知参数: $1"; exit 1 ;;
     esac
 done
 
 if [ "$VERSION" = "latest" ]; then
-    set +e
-    retry=0
-    max_retry=10
-    while [ $retry -lt $max_retry ]; do
-        VERSION=$(get_latest_version)
-        if [ $? -eq 0 ] && [ -n "$VERSION" ]; then
-            break
+    attempt=1
+    max_attempts=10
+    until VERSION=$(get_latest_version); do
+        if [ "$attempt" -ge "$max_attempts" ]; then
+            log_error "❌  无法从 version.txt 读取最新版本号" >&2
+            exit 1
         fi
-        retry=$((retry + 1))
-        log_warn "⚠️  获取最新版本失败 ($retry/$max_retry)，重试中..."
+        log_warn "⚠️  获取最新版本失败 ($attempt/$max_attempts)，重试中..." >&2
         sleep 2
+        attempt=$((attempt + 1))
     done
-    set -e
-    if [ -z "$VERSION" ]; then
-        log_error "❌  无法获取最新版本，已重试 $max_retry 次"
-        exit 1
-    fi
 fi
 
 # 干跑模式（只输出版本号）
@@ -189,4 +118,4 @@ if [ "$DRY_RUN" = "true" ]; then
 fi
 
 # 执行安装
-install_tailscale "$VERSION" "$MODE" "$MIRROR_LIST"
+install_tailscale "$VERSION" "$MODE"

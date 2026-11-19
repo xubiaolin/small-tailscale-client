@@ -60,7 +60,7 @@ start_service() {
       log_info "🛠️  临时模式已启动, Tailscale服务日志文件：/var/log/tailscale.log"
     else
       log_info "🛠️  tmp模式, 文件不存在, 正在下载 tailscaled, 日志:/tmp/tailscale_update.log"
-      "$CONFIG_DIR/autoupdate.sh" 2>&1 | tee -a /tmp/tailscale_update.log
+      "$CONFIG_DIR/autoupdate.sh" --on-start 2>&1 | tee -a /tmp/tailscale_update.log
       if [ -x /tmp/tailscaled ]; then
         log_info "✅  检测到文件已下载, 直接启动 tailscaled..."
         start_tailscaled /tmp/tailscaled
