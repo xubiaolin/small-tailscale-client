@@ -12,7 +12,9 @@ function method(name, params, object) {
 	};
 }
 
-const status = method('status');
+const readStatus = method('status');
+const adminStatus = method('status_auth');
+function status() { return L.hasViewPermission() ? adminStatus() : readStatus(); }
 const config = method('config');
 const save = method('save', ['mode', 'auto_update', 'pinned_version', 'mirror', 'params', 'previous']);
 const install = method('install');
@@ -170,7 +172,7 @@ return view.extend({
 					fact('连接状态', states[node.state] || node.state || '未知')
 				] : []),
 				...(node.ips && node.ips.length ? [fact('Tailscale IP', node.ips.join(' · '))] : []),
-				...authLink(node),
+				...(L.hasViewPermission() ? authLink(node) : []),
 				...(node.busy ? [E('p', { class: 'spinning' }, ['操作进行中，可在日志页查看进度。'])] : []),
 				...(statusError ? [E('p', { role: 'alert' }, [statusError])] : [])
 			);

@@ -14,6 +14,7 @@ jobs:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
         with:
           persist-credentials: false
+      - run: python3 tests/release_matrix.py
       - run: sh tests/cli.sh
       - run: sh tools/package-cli.sh --check
 
@@ -67,4 +68,5 @@ jobs:
         run: |
           image="small-ts-openwrt:$OPENWRT_VERSION"
           docker import "$OPENWRT_ROOTFS" "$image"
+          docker run --rm --network none -v "$PWD:/src:ro" "$image" sh /src/tests/router-scripts.sh
           sh tests/network-rpc.sh "$image"

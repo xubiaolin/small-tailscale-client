@@ -5,6 +5,7 @@ set -e
 . /etc/tailscale/tools.sh
 RECORD_INSTALL_LOG=true
 lock_config
+"$CONFIG_DIR/source.sh" --require-project
 [ ! -s "$INST_CONF" ] || safe_source "$INST_CONF"
 ensure_arch || exit 1
 
@@ -72,6 +73,13 @@ install_tailscale() {
 
     # 安装
     chmod 755 "$tailscale_temp_path"
+    if [ "${SMALL_TS_MARK_RESTART:-}" = 1 ]; then
+        if [ -n "${SMALL_TS_PREVIOUS_BINARY:-}" ]; then
+            printf '%s\n' "$SMALL_TS_PREVIOUS_BINARY" > "$RESTART_PENDING"
+        else
+            touch "$RESTART_PENDING"
+        fi
+    fi
     mv "$tailscale_temp_path" "$bin_dir/tailscaled"
     ln -sf "$bin_dir/tailscaled" /usr/bin/tailscaled
     ln -sf "$bin_dir/tailscaled" /usr/bin/tailscale

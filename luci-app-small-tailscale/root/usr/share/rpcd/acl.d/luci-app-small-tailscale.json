@@ -9,7 +9,7 @@
 		},
 		"write": {
 			"ubus": {
-				"small-tailscale": ["save", "install", "start"],
+				"small-tailscale": ["save", "install", "start", "status_auth"],
 				"small-tailscale.network": ["apply"]
 			}
 		}

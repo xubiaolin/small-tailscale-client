@@ -63,8 +63,15 @@ if [ "$has_args" = false ]; then
 fi
 
 lock_config
+"$CONFIG_DIR/source.sh" --require-project
 safe_source "$INST_CONF"
+previous_binary=$(readlink /usr/bin/tailscaled || :)
+if [ "$(readlink /usr/bin/tailscale)" != "$previous_binary" ]; then previous_binary=; fi
 MODE=${requested_mode:-${REQUESTED_MODE:-${MODE:-local}}}
+case "$MODE:$previous_binary" in
+    tmp:/usr/local/bin/tailscaled|local:/tmp/tailscaled) ;;
+    *) previous_binary= ;;
+esac
 AUTO_UPDATE=${requested_update:-${AUTO_UPDATE:-false}}
 case "$MODE" in local|tmp) ;; *) log_error "无效的安装模式：$MODE"; exit 1 ;; esac
 case "$AUTO_UPDATE" in true|false) ;; *) log_error "无效的自动更新设置"; exit 1 ;; esac
@@ -90,8 +97,9 @@ TIMESTAMP=$(date +%s)
 EOF
 
 log_info "正在安装 $version ($MODE, $ARCH)，下载地址 $GITHUB_DOWNLOAD_BASE_URL"
-"$CONFIG_DIR/fetch_and_install.sh" --mode="$MODE" --version="$version"
+SMALL_TS_MARK_RESTART=1 SMALL_TS_PREVIOUS_BINARY=$previous_binary \
+    "$CONFIG_DIR/fetch_and_install.sh" --mode="$MODE" --version="$version"
 mv "$tmp" "$INST_CONF"
-unlock_config
 SMALL_TS_SKIP_START_UPDATE=1 "$CONFIG_DIR/setup_service.sh"
+finish_restart
 "$CONFIG_DIR/setup_cron.sh" --auto-update="$AUTO_UPDATE"

@@ -1,47 +1,30 @@
 #!/bin/sh
-
 set -e
-[ -f /etc/tailscale/tools.sh ] && . /etc/tailscale/tools.sh
+. /etc/tailscale/tools.sh
 
-# 参数解析
-AUTO_UPDATE=false
-while [ $# -gt 0 ]; do
-    case "$1" in
-        --auto-update=*) 
-            AUTO_UPDATE="${1#*=}"
-            if [ "$AUTO_UPDATE" != "true" ] && [ "$AUTO_UPDATE" != "false" ]; then
-                log_error "❌  错误：--auto-update 参数值应为 true 或 false"
-                exit 1
-            fi
-            shift
-            ;;
-        *)
-            log_error "❌  错误：未知参数: $1"
-            exit 1
-            ;;
-    esac
-done
-
-
-# 清除旧配置
-log_info "⏰  清除旧的定时任务配置..."
-if [ -f /etc/crontabs/root ]; then
-    sed -i "\|$CONFIG_DIR/|d" /etc/crontabs/root || { log_error "❌  清除旧配置失败"; exit 1; }
-else
-    log_info "⚠️  /etc/crontabs/root 文件不存在，跳过清除操作"
+case "${1:-}" in
+    ''|--auto-update=true|--auto-update=false|--remove) ;;
+    *) log_error "无效的定时任务选项：$1"; exit 1 ;;
+esac
+lock_config
+crontab=/etc/crontabs/root
+if [ "${1:-}" = --remove ] && [ ! -f "$crontab" ]; then exit 0; fi
+tmp=$(mktemp "$crontab.XXXXXX")
+trap 'rm -f "$tmp"' EXIT
+if [ -f "$crontab" ]; then
+    # 只替换本项目生成的两种每日任务，保留管理员添加的参数、重定向和其他命令。
+    awk -v dir="$CONFIG_DIR/" '
+        NF == 6 && $1 ~ /^[0-9]+$/ && $3 == "*" && $4 == "*" && $5 == "*" {
+            if ($6 == dir "autoupdate.sh" && $2 ~ /^[456]$/) next
+            if ($6 == dir "test_mirrors.sh" && $2 ~ /^[23]$/) next
+        }
+        {print}
+    ' "$crontab" > "$tmp"
 fi
-
-# 自动更新任务（4~6）
-UPDATE_HOUR=$((4 + $(awk -v seed=$(date +%s) 'BEGIN{srand(seed+2000); print int(rand()*3)}')))
-UPDATE_MIN=$(awk -v seed=$(date +%s) 'BEGIN{srand(seed+3000); print int(rand()*60)}')
-
-# 添加自动更新任务
-log_info "⏰  添加自动更新任务..."
-echo "$UPDATE_MIN $UPDATE_HOUR * * * $CONFIG_DIR/autoupdate.sh" >> /etc/crontabs/root || { log_error "❌  添加自动更新任务失败"; exit 1; }
-log_info "⏰  自动更新任务运行时间已设定为 $UPDATE_HOUR 点 $UPDATE_MIN 分"
-
-# 重启cron服务
-log_info "⏰  重启cron服务..."
-/etc/init.d/cron restart || { log_error "❌  重启cron服务失败"; exit 1; }
-
-log_info "⏰  定时任务配置完成！"
+if [ "${1:-}" != --remove ]; then
+    awk -v seed="$(date +%s)" -v dir="$CONFIG_DIR" 'BEGIN {
+        srand(seed); printf "%d %d * * * %s/autoupdate.sh\n", int(rand()*60), 4+int(rand()*3), dir
+    }' >> "$tmp"
+fi
+mv "$tmp" "$crontab"
+/etc/init.d/cron restart

@@ -55,49 +55,99 @@ function configuration(source, opts) {
 }
 
 const jobLock = '/var/lock/small-tailscale-job.lock';
+const authFile = '/var/run/small-tailscale/start-auth';
 function busy() {
 	let file = fs.open(jobLock, 'r');
 	return file && !file.lock('sn') || false;
 }
 
-function logs(kind) {
-	if (kind == 'runtime')
-		return { text: output("logread -e tailscale 2>/dev/null | tail -n 120") +
-			output('tail -n 80 /var/log/tailscale.log 2>/dev/null') +
-			output('tail -n 80 /var/run/small-tailscale/start.log 2>/dev/null') };
-	if (kind == 'install')
-		return { text: output('tail -n 100 /tmp/tailscale_update.log 2>/dev/null') +
-			output('tail -n 120 /var/log/tailscale_install.log 2>/dev/null') +
-			output('tail -n 80 /var/run/small-tailscale/install.log 2>/dev/null') };
-	die('日志类别无效');
+function savedSecrets() {
+	const params = fields('tailscale_up.conf');
+	return filter([params['--auth-key'], params['--client-secret'], params['--id-token']], value => !!value);
 }
 
-function status() {
+function redact(line, secrets) {
+	for (let value in secrets)
+		if (index(line, value) >= 0) return '[已隐藏凭证]';
+	if (match(line, /--(auth-?key|client-secret|id-token)|tskey-|authurl|data:image\/|^[[:space:]#█▀▄]*[#█▀▄][[:space:]#█▀▄]*$/i))
+		return '[已隐藏凭证]';
+	return replace(line, /https?:\/\/[^[:space:]]+/ig, '[已隐藏链接]');
+}
+
+function streamStartLog() {
+	const secrets = savedSecrets();
+	let line;
+	while ((line = fs.stdin.read('line'))) {
+		line = replace(line, /\r?\n$/, '');
+		let auth = match(trim(line), /^(https?:\/\/[^[:space:]]+)$/) ||
+			match(line, /"AuthURL"[[:space:]]*:[[:space:]]*"(https?:\/\/[^"[:space:]]+)"/);
+		if (auth) fs.writefile(authFile, auth[1]);
+		fs.stdout.write(redact(line, secrets) + '\n');
+		fs.stdout.flush();
+	}
+}
+
+function logs(kind) {
+	let data;
+	if (kind == 'runtime')
+		data = output("logread -e tailscale 2>/dev/null | tail -n 120") +
+			output('tail -n 80 /var/log/tailscale.log 2>/dev/null') +
+			output('tail -n 80 /var/run/small-tailscale/start.log 2>/dev/null');
+	else if (kind == 'install')
+		data = output('tail -n 100 /tmp/tailscale_update.log 2>/dev/null') +
+			output('tail -n 120 /var/log/tailscale_install.log 2>/dev/null') +
+			output('tail -n 80 /var/run/small-tailscale/install.log 2>/dev/null');
+	else die('日志类别无效');
+	// 旧版 CLI 的报错可能整行回显参数。过滤也覆盖升级前已有的日志。
+	const secrets = savedSecrets();
+	return { text: join('\n', map(split(data, '\n'), line => redact(line, secrets))) };
+}
+
+function installedVersion() {
+	const file = '/var/run/small-tailscale/version';
+	const stat = fs.stat('/usr/bin/tailscale');
+	if (!stat) return '';
+	const key = join(':', [stat.dev.major, stat.dev.minor, stat.inode, stat.size, stat.mtime, stat.ctime]);
+	const cached = split(trim(fs.readfile(file) || ''), ' ');
+	if (cached[0] == key && cached[1]) return cached[1];
+	const matchVersion = match(output('/usr/bin/tailscale version 2>/dev/null'), /^v?([0-9]+\.[0-9]+\.[0-9]+[^ \t\r\n]*)/);
+	if (!matchVersion) return trim(fs.readfile(conf + '/current_version') || '');
+	const version = 'v' + matchVersion[1];
+	fs.mkdir('/var/run/small-tailscale', 0700);
+	fs.writefile(file, key + ' ' + version);
+	return version;
+}
+
+function status(withAuth) {
 	let source = trim(output(share + '/source')) || 'external';
 	let installed = !!fs.access('/usr/bin/tailscale', 'x') || (source == 'external' && !!fs.access('/usr/sbin/tailscale', 'x'));
 	let node = {}, version = '';
 	if (installed && source == 'project') {
-		version = match(output('/usr/bin/tailscale version 2>/dev/null'), /^v?([0-9]+\.[0-9]+\.[0-9]+[^ \t\r\n]*)/);
-		version = version ? 'v' + version[1] : trim(fs.readfile(conf + '/current_version') || '');
-		try { node = json(output('/usr/bin/tailscale status --json 2>/dev/null')) || {}; } catch (_) {}
+		version = installedVersion();
+		try { node = json(output('/usr/bin/tailscale status --json --peers=false 2>/dev/null')) || {}; } catch (_) {}
 	}
 
-	let url = node.AuthURL || '';
-	if (node.BackendState == 'NeedsLogin' && !url) {
-		let result = match(output('tail -n 12 /var/run/small-tailscale/start.log 2>/dev/null'),
-			/(^|\n)[ \t]*(https?:\/\/[^[:space:]]+)[ \t]*(\n|$)/);
-		if (result) url = result[2];
+	let url = withAuth && node.BackendState == 'NeedsLogin' ? node.AuthURL || '' : '';
+	const working = busy();
+	if (withAuth && node.BackendState == 'NeedsLogin' && !url && working) {
+		url = trim(fs.readfile(authFile) || '');
+		if (!url) {
+			// 升级时可能已有仍在等待授权的旧版任务。
+			let result = match(output('tail -n 12 /var/run/small-tailscale/start.log 2>/dev/null'),
+				/(^|\n)[ \t]*(https?:\/\/[^[:space:]]+)[ \t]*(\n|$)/);
+			if (result) url = result[2];
+		}
 	}
 
 	return {
 		source, installed, version,
 		state: node.BackendState || 'Stopped',
-		ips: node.TailscaleIPs || [], auth_url: url, busy: busy()
+		ips: node.TailscaleIPs || [], auth_url: url, busy: working
 	};
 }
 
 const methods = {
-	status: {}, config: {}, save: { mode: '', auto_update: false, pinned_version: '', mirror: '', params: {}, previous: {} },
+	status: {}, status_auth: {}, config: {}, save: { mode: '', auto_update: false, pinned_version: '', mirror: '', params: {}, previous: {} },
 	install: {}, start: {}, logs: { kind: '' }
 };
 
@@ -164,13 +214,17 @@ function save(args, source) {
 	if ('previous' in args && !sameConfiguration(args.previous, configuration(source, opts)))
 		die('设置已由其他入口修改，请刷新页面后重新保存。');
 
-	let known = {};
+	let known = {}, saved = fields('tailscale_up.conf');
 	for (let opt in opts) {
 		known[opt.key] = true;
-		if (!(opt.key in params) || params[opt.key] == '') continue;
+		if (!(opt.key in params) || params[opt.key] === '') {
+			if (opt.type != 'secret' && ('--' + opt.key) in saved)
+				push(lines, '--' + opt.key + '=""\n');
+			continue;
+		}
 		let val = params[opt.key];
 		if (opt.type == 'secret' && val === masked) {
-			val = fields('tailscale_up.conf')['--' + opt.key];
+			val = saved['--' + opt.key];
 			if (!val) continue;
 		}
 		if (type(val) != 'string' || match(val, /[[:cntrl:]]/) ||
@@ -194,7 +248,7 @@ function save(args, source) {
 }
 
 function call(method, args) {
-	if (method == 'status') return status();
+	if (method == 'status' || method == 'status_auth') return status(method == 'status_auth');
 	if (method == 'logs') return logs(args.kind);
 	let source = trim(output(share + '/source'));
 	if (method == 'config') return configuration(source, options());
@@ -214,6 +268,10 @@ function call(method, args) {
 	die('未知操作');
 }
 
+if (ARGV[0] == 'stream-start') {
+	streamStartLog();
+	exit(0);
+}
 try {
 	if (ARGV[0] == 'list') print(methods);
 	else if (ARGV[0] == 'call' && ARGV[1] in methods)

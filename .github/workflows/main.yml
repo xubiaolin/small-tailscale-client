@@ -22,93 +22,20 @@ env:
 jobs:
   prepare_versions:
     runs-on: self-hosted
+    permissions:
+      contents: read
     outputs:
       matrix: ${{ steps.set_matrix.outputs.matrix }}
     steps:
-      - name: Fetch all releases from tailscale official repo
-        id: fetch_releases
-        run: |
-          curl -s "https://api.github.com/repos/${{ env.REPO_OFFICIAL }}/releases?per_page=1000" | \
-            jq -r '.[].tag_name' | grep -E '^v?[0-9]+\.[0-9]+\.[0-9]+$' > all_releases.txt
-
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
       - name: Parse user input and build matrix
         id: set_matrix
-        run: |
-          echo "===> 输入参数: ${{ github.event.inputs.versions }}"
-          input="${{ github.event.inputs.versions }}"
-
-          # 获取本地仓库已有 release 列表
-          existing_releases=$(curl -s "https://api.github.com/repos/${{ github.repository }}/releases" | jq -r '.[].tag_name' | sed 's/^v//')
-          echo "===> 本地已有 release: "
-          echo "$existing_releases"
-          echo "====> 开始处理版本范围"
-
-          declare -A versions
-
-          if [ -z "$input" ]; then
-            # 未提供输入，默认取最新 tag
-            tag=$(head -n1 all_releases.txt)
-            tag=${tag#v}  # 去除前缀 v
-            if echo "$existing_releases" | grep -qx "$tag"; then
-              echo "release $tag 已存在"
-              echo 'matrix=["skip"]' >> "$GITHUB_OUTPUT"
-              exit 0
-            fi
-            echo "未提供输入，默认取第一个 release: $tag"
-            echo "matrix=$(jq -cn --arg v "$tag" '[ $v ]')" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-
-          echo "===> 开始解析版本范围：$input"
-
-          IFS=',' read -ra parts <<< "$input"
-          for part in "${parts[@]}"; do
-            if [[ "$part" == *"-"* ]]; then
-              start=${part%-*}
-              end=${part#*-}
-              echo "  发现范围: $start 到 $end"
-              matched=$(sed 's/^v//' all_releases.txt | sort -V | awk -v s="$start" -v e="$end" '$0 >= s && $0 <= e')
-              echo "    匹配结果：$(echo "$matched" | xargs)"
-              for v in $matched; do
-                # 跳过已有 release
-                if echo "$existing_releases" | grep -qx "$v"; then
-                  echo "    跳过已有 release: $v"
-                  continue
-                fi
-                versions["v$v"]=1
-              done
-            else
-              echo "  发现单一版本: $part"
-              if echo "$existing_releases" | grep -qx "$part"; then
-                echo "    跳过已有 release: $part"
-                continue
-              fi
-              versions["v$part"]=1
-            fi
-          done
-
-          echo "===> 收集到版本（未排序）:"
-          for v in "${!versions[@]}"; do
-            echo "  - $v"
-          done
-
-          all_versions_sorted=$(for v in "${!versions[@]}"; do echo "$v" | sed 's/^v//'; done | sort -V)
-          echo "===> 排序后版本:"
-          echo "$all_versions_sorted"
-
-          # 如果排序后的版本为空，写入占位 skip
-          if [ -z "$all_versions_sorted" ]; then
-            echo "===> 没有可用版本，生成占位 skip"
-            jq_array=$(jq -cn --arg v skip '[ $v ]')
-          else
-            jq_array=$(printf '%s\n' $all_versions_sorted | jq -R . | jq -s .)
-          fi
-
-          echo "===> 生成 matrix:"
-          echo "$jq_array" | jq -c
-          echo "matrix=$(echo "$jq_array" | jq -c)" >> "$GITHUB_OUTPUT"
-          echo "====> 结束处理版本范围"
-
+        env:
+          REQUESTED_VERSIONS: ${{ inputs.versions }}
+          GH_TOKEN: ${{ github.token }}
+        run: python3 tools/release_matrix.py >> "$GITHUB_OUTPUT"
 
   build_and_release:
     needs: prepare_versions
@@ -134,16 +61,14 @@ jobs:
       - name: Check if release exists
         id: check_release
         if: env.skip != 'true'
+        env:
+          TOKEN: ${{ github.token }}
         run: |
-          REPO="${{ github.repository }}"
-          TAG="v${{ matrix.version }}"
-          TOKEN="${{ secrets.GITHUB_TOKEN }}"
-
           # 查询 Release
           RESPONSE=$(curl -s -o /dev/null -w "%{http_code}" \
             -H "Authorization: token $TOKEN" \
             -H "Accept: application/vnd.github+json" \
-            "https://api.github.com/repos/$REPO/releases/tags/$TAG")
+            "https://api.github.com/repos/$GITHUB_REPOSITORY/releases/tags/$TAG")
 
           if [ "$RESPONSE" -eq 200 ]; then
             echo "Release $TAG already exists"
@@ -181,7 +106,7 @@ jobs:
       - name: Build optimized binaries
         if: env.skip != 'true'
         run: |
-          echo "${{ env.TAG }}" > version.txt
+          echo "$TAG" > version.txt
           mkdir -p ./build
           for arch in ${{ env.BUILD_PLATFORMS }}; do
             echo "Building for $arch..."
@@ -248,17 +173,15 @@ jobs:
 
       - name: Wait previous version release
         if: env.skip != 'true'
+        env:
+          MATRIX_VERSIONS: ${{ needs.prepare_versions.outputs.matrix }}
         run: |
-          # echo "=== 当前 Matrix 版本列表 ==="
-          # echo '${{ needs.prepare_versions.outputs.matrix }}' | jq -r '.[]'
-
-          # 解析 matrix 为 bash 数组
-          readarray -t matrix_versions < <(echo '${{ needs.prepare_versions.outputs.matrix }}' | jq -r '.[]')
+          readarray -t matrix_versions < <(jq -r '.[]' <<< "$MATRIX_VERSIONS")
 
           # 找出当前版本在 matrix 中的前一个版本
           prev_version=""
           for i in "${!matrix_versions[@]}"; do
-            if [ "${matrix_versions[$i]}" == "${{ matrix.version }}" ]; then
+            if [ "${matrix_versions[$i]}" == "${TAG#v}" ]; then
               if [ $i -gt 0 ]; then
                 prev_version="${matrix_versions[$i-1]}"
               fi
@@ -267,7 +190,7 @@ jobs:
           done
 
           if [ -z "$prev_version" ]; then
-            echo "当前版本是最早版本，无需等待，直接发布 ${{ matrix.version }}"
+            echo "当前版本是最早版本，无需等待，直接发布 $TAG"
             exit 0
           fi
 
@@ -279,7 +202,7 @@ jobs:
             sleep 5
           done
 
-          echo "✅ 前一个版本 v$prev_version 的 release 已存在 — 可以发布当前版本 ${{ matrix.version }}"
+          echo "✅ 前一个版本 v$prev_version 的 release 已存在 — 可以发布当前版本 $TAG"
 
       - name: Create Release
         uses: softprops/action-gh-release@v1

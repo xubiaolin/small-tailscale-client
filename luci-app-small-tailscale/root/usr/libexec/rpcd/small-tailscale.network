@@ -62,11 +62,64 @@ function words(value) {
 	return type(value) == 'array' ? value : split(trim(value || ''), /\s+/);
 }
 
-function inspect(uci, routes) {
+function ownedRule(section) {
+	if (!section || section['.type'] != 'rule' || !section.dest_ip)
+		return false;
+	for (let key, expected in rule)
+		if (section[key] != expected)
+			return false;
+	for (let key in keys(section))
+		if (substr(key, 0, 1) != '.' && key != 'dest_ip' && key != 'name' && !exists(rule, key))
+			return false;
+	let routes;
+	try {
+		routes = subnets(join(',', words(section.dest_ip)));
+	} catch (e) {
+		return false;
+	}
+	return section.name == label(routes);
+}
+
+// 接口名也可能由用户创建。仅移除带标记、内容未改且未被其他配置引用的接口。
+function removableInterface(network, firewall) {
+	const iface = network[interfaceName];
+	if (iface?.['.type'] != 'interface' || iface.small_tailscale_managed != '1' ||
+	    iface.proto != 'none' || iface.device != device)
+		return false;
+	for (let key in keys(iface))
+		if (substr(key, 0, 1) != '.' && !(key in ['proto', 'device', 'small_tailscale_managed']))
+			return false;
+	for (let config in [network, firewall])
+		for (let name, section in config) {
+			if (config == network && name == interfaceName) continue;
+			for (let key, val in section) {
+				if (substr(key, 0, 1) == '.') continue;
+				const names = words(val);
+				if (interfaceName in names || ('@' + interfaceName) in names) return false;
+			}
+		}
+	return true;
+}
+
+function pendingChanges() {
+	const shared = cursor();
+	for (let name in ['network', 'firewall']) {
+		if (length(shared.changes(name)) || fs.access('/var/run/rpcd/snapshot-files/' + name))
+			return true;
+		for (let path in fs.glob('/var/run/rpcd/uci-*/' + name))
+			if (fs.stat(path)?.size > 0) return true;
+	}
+	return false;
+}
+
+function inspect(uci, routes, cleanup) {
 	const network = uci.get_all('network');
 	const firewall = uci.get_all('firewall');
 	if (!network || !firewall)
 		die('读取 network 或 firewall 配置失败。');
+	const old = firewall[ruleName];
+	if (cleanup)
+		return {remove: removableInterface(network, firewall), update: ownedRule(old)};
 	let iface;
 	for (let key, section in network) {
 		if (section['.type'] == 'interface' && (device in words(section.device || section.ifname)))
@@ -77,17 +130,8 @@ function inspect(uci, routes) {
 	const create = !!length(routes) && !iface;
 	if (create && network[interfaceName])
 		die('接口名称 smallts 已被占用。');
-	const old = firewall[ruleName];
-	if (old) {
-		if (old['.type'] != 'rule' || !old.dest_ip || old.name != label(subnets(join(',', words(old.dest_ip)))))
-			die('防火墙规则名 smallts_subnets 已被占用。');
-		for (let key, expected in rule)
-			if (old[key] != expected)
-				die('已有的 smallts_subnets 规则与预期配置冲突。');
-		for (let key in keys(old))
-			if (substr(key, 0, 1) != '.' && key != 'dest_ip' && key != 'name' && !exists(rule, key))
-				die('已有的 smallts_subnets 规则包含自定义选项。');
-	}
+	if (old && !ownedRule(old))
+		die('已有的 smallts_subnets 防火墙规则已被占用或含有自定义选项。');
 	if (create) {
 		for (let key, section in firewall)
 			if (section['.type'] == 'zone' && interfaceName in words(section.network))
@@ -113,9 +157,12 @@ function save(uci, routes, plan) {
 		if (!uci.set('network', interfaceName, 'interface') ||
 		    !uci.set('network', interfaceName, 'proto', 'none') ||
 		    !uci.set('network', interfaceName, 'device', device) ||
+		    !uci.set('network', interfaceName, 'small_tailscale_managed', '1') ||
 		    !uci.commit('network'))
 			die('保存网络接口失败。');
 	}
+	if (plan.remove && (!uci.delete('network', interfaceName) || !uci.commit('network')))
+		die('清除托管网络接口失败。');
 	if (plan.update) {
 		if (length(routes)) {
 			if (!uci.set('firewall', ruleName, 'rule'))
@@ -160,7 +207,7 @@ function active(routes) {
 
 // UCI 使用独立的暂存目录。两个文件分别以 rename 切换，重载失败时恢复原文件。
 function activate(routes, plan, token) {
-	if (!plan.create && !plan.update) {
+	if (!plan.create && !plan.remove && !plan.update) {
 		if (active(routes))
 			return;
 		if (system('fw4 check >/dev/null && fw4 reload >/dev/null') != 0 || !active(routes))
@@ -179,11 +226,10 @@ function activate(routes, plan, token) {
 			die('备份网络配置失败。');
 		const staged = cursor(dir + '/new', dir + '/delta');
 		save(staged, routes, plan);
-		if (token != previewToken(routes) ||
-		    length(cursor().changes('network')) || length(cursor().changes('firewall')))
+		if (token != previewToken(routes) || pendingChanges())
 			die('配置已变化或有待提交的 UCI 修改，请重新预览。');
 		for (let name in ['network', 'firewall']) {
-			if (!(name == 'network' ? plan.create : plan.update))
+			if (!(name == 'network' ? (plan.create || plan.remove) : plan.update))
 				continue;
 			const file = dir + '/new/' + name;
 			const live = '/etc/config/' + name;
@@ -194,7 +240,7 @@ function activate(routes, plan, token) {
 		}
 		if (plan.update && system('fw4 check >/dev/null') != 0)
 			die('fw4 校验失败。');
-		if (plan.create) {
+		if (plan.create || plan.remove) {
 			reloadNetwork = true;
 			if (system('ubus call network reload >/dev/null') != 0)
 				die('网络接口重载失败。');
@@ -226,21 +272,26 @@ function activate(routes, plan, token) {
 function run() {
 	if (ARGV[0] == 'list')
 		return methods;
-	if (ARGV[0] != 'call' || !exists(methods, ARGV[1]))
+	const cleanup = ARGV[0] == 'cleanup';
+	if (!cleanup && (ARGV[0] != 'call' || !exists(methods, ARGV[1])))
 		die('未知的网络操作。');
-	const request = json(fs.stdin.read('all'));
-	const routes = subnets(request.routes);
+	const request = cleanup ? null : json(fs.stdin.read('all'));
+	const routes = cleanup ? [] : subnets(request.routes);
 	let lock;
-	if (ARGV[1] == 'apply') {
+	if (cleanup || ARGV[1] == 'apply') {
 		lock = fs.open('/var/lock/small-tailscale-network', 'a', 0600);
 		if (!lock || !lock.lock('x'))
 			die('网络配置锁定失败。');
 	}
 	const uci = cursor();
-	if (length(uci.changes('network')) || length(uci.changes('firewall')))
+	if (pendingChanges())
 		die('网络或防火墙有待提交的 UCI 修改，请先处理。');
 	const token = previewToken(routes);
-	const plan = inspect(uci, routes);
+	const plan = inspect(uci, routes, cleanup);
+	if (cleanup) {
+		if (plan.remove || plan.update) activate(routes, plan, token);
+		return {ok: true};
+	}
 	if (ARGV[1] == 'apply') {
 		if (type(request.token) != 'string' || request.token != token)
 			die('网段或系统配置已变化，请重新预览。');
@@ -255,5 +306,6 @@ function run() {
 try {
 	print(sprintf('%J\n', run()));
 } catch (e) {
+	if (ARGV[0] == 'cleanup') { warn(e.message + '\n'); exit(1); }
 	print(sprintf('%J\n', { error: e.message }));
 }

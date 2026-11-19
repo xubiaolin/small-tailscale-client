@@ -8,19 +8,17 @@ set -o pipefail 2>/dev/null || true
 
 TIME_OUT=20
 CONFIG_DIR="/etc/tailscale"
-mkdir -p "$CONFIG_DIR"
 # 安装脚本独立运行，此时脚本包中的 tools.sh 可能尚未安装。
 if [ -r "$CONFIG_DIR/github-download.env" ]; then
     : "${GITHUB_DOWNLOAD_BASE_URL=$(sed -n 's/^GITHUB_DOWNLOAD_BASE_URL=//p' "$CONFIG_DIR/github-download.env" | tail -n 1)}"
 fi
 GITHUB_DOWNLOAD_BASE_URL=${GITHUB_DOWNLOAD_BASE_URL:-https://github.com}
 
-SCRIPTS_TGZ_PATH="/tmp/tailscale-openwrt-scripts.tar.gz"
 SCRIPTS_TGZ_URL_SUFFIX="xubiaolin/small-tailscale-client/raw/refs/heads/main/tailscale-openwrt-scripts.tar.gz"
 
 # 预先计算的校验和（由 GitHub Actions 自动回填）
-EXPECTED_CHECKSUM_SHA256="58c736849d8d351c9ef823df9e2cd8e7d060dd6f99974af33ed2bfc22fb44448"
-EXPECTED_CHECKSUM_MD5="904c8ccfd1c3cef3371e3d76a509afcd"
+EXPECTED_CHECKSUM_SHA256="7004f8b6a86bec1f589a7956fd86f8d8d09d222d5f9b516b9998e3d5852e1ebb"
+EXPECTED_CHECKSUM_MD5="23d979eb105af9c2dbf7b38ba94d9e8d"
 
 # -------------------- 日志 --------------------
 log_info() {
@@ -57,7 +55,7 @@ fi
 pkg_list_installed() {
     case "$PKG_MGR" in
         opkg) opkg list-installed ;;
-        apk) apk info -e ;;
+        apk) apk info ;;
     esac
 }
 
@@ -162,11 +160,11 @@ case "$PKG_MGR" in
             SKIP_OPENSSL=0
         fi
 
-        REQUIRED_PACKAGES="ca-bundle kmod-tun coreutils-timeout coreutils-nohup curl"
+        REQUIRED_PACKAGES="ca-bundle kmod-tun coreutils-timeout curl"
         [ "$SKIP_OPENSSL" -eq 0 ] && REQUIRED_PACKAGES="libustream-openssl $REQUIRED_PACKAGES"
         ;;
     apk)
-        REQUIRED_PACKAGES="ca-certificates curl coreutils-timeout coreutils-nohup"
+        REQUIRED_PACKAGES="ca-certificates kmod-tun curl coreutils-timeout"
         ;;
     *)
         log_error "❌  不支持的包管理器: $PKG_MGR"
@@ -199,8 +197,8 @@ if [ "$need_install" -eq 1 ]; then
         if pkg_install "$package" 2>&1; then
             log_info "✅  包 $package 安装成功"
         else
-            # coreutils-timeout / coreutils-nohup 失败：尝试 coreutils
-            if [ "$PKG_MGR" = "opkg" ] && { [ "$package" = "coreutils-timeout" ] || [ "$package" = "coreutils-nohup" ]; }; then
+            # coreutils-timeout 失败：尝试 coreutils
+            if [ "$PKG_MGR" = "opkg" ] && [ "$package" = "coreutils-timeout" ]; then
                 alt="coreutils"
                 log_warn "⚠️  安装 $package 失败，尝试安装 $alt 替代..."
                 if pkg_install "$alt" 2>&1; then
@@ -224,7 +222,7 @@ fi
 sync_time || true
 
 # 最终检查关键命令
-for cmd in timeout nohup tar; do
+for cmd in timeout tar; do
     if ! command -v "$cmd" >/dev/null 2>&1; then
         log_error "❌  未检测到 $cmd 命令，请安装后重新执行脚本"
         exit 1
@@ -235,56 +233,6 @@ if ! command -v curl >/dev/null 2>&1 && ! command -v wget >/dev/null 2>&1; then
     log_error "❌  curl 和 wget 都不可用，无法继续"
     exit 1
 fi
-
-# -------------------- 下载工具（与 tools.sh 保持一致的返回语义：仅 2xx 成功） --------------------
-webget() {
-    # $1 输出文件
-    # $2 URL
-    # $3 是否静默: echooff
-    # $4 禁止重定向: rediroff
-    local outfile="$1"
-    local url="$2"
-
-    local ua="Tailscale-Helper"
-
-    local quiet=""
-    [ "$3" = "echooff" ] && quiet="-s"
-
-    local redirect="-L"
-    [ "$4" = "rediroff" ] && redirect=""
-
-    if command -v curl >/dev/null 2>&1; then
-        http_code=$(timeout "$TIME_OUT" curl $quiet $redirect \
-            -A "$ua" \
-            -w "%{http_code}" \
-            -o "$outfile" \
-            "$url" 2>/dev/null || true)
-
-        case "$http_code" in 2*) return 0 ;; *) return 1 ;; esac
-    fi
-
-    if command -v wget >/dev/null 2>&1; then
-        local q="--show-progress"
-        [ "$3" = "echooff" ] && q="-q"
-
-        local r=""
-        [ "$4" = "rediroff" ] && r="--max-redirect=0"
-
-        headers=$(mktemp)
-        timeout "$TIME_OUT" wget $q $r \
-            --server-response --no-check-certificate \
-            --header="User-Agent: $ua" \
-            -O "$outfile" "$url" 2>"$headers" || true
-
-        http_code=$(grep -oE 'HTTP/[0-9\.]+ [0-9]+' "$headers" | tail -n1 | awk '{print $2}')
-        rm -f "$headers"
-
-        case "$http_code" in 2*) return 0 ;; *) return 1 ;; esac
-    fi
-
-    log_error "❌ curl 和 wget 都不存在"
-    return 1
-}
 
 verify_checksum() {
     # $1 file  $2 type(sha256/md5)  $3 expected
@@ -331,7 +279,18 @@ verify_checksum() {
 # -------------------- 下载脚本包并校验 --------------------
 scripts_tgz_url="${GITHUB_DOWNLOAD_BASE_URL%/}/${SCRIPTS_TGZ_URL_SUFFIX}"
 
-if webget "$SCRIPTS_TGZ_PATH" "$scripts_tgz_url" "echooff"; then
+SCRIPTS_TGZ_PATH=$(mktemp)
+stage=''
+trap 'rm -f "$SCRIPTS_TGZ_PATH"; [ -z "$stage" ] || rm -rf "$stage"' EXIT
+
+download_archive() {
+    if command -v curl >/dev/null 2>&1; then
+        timeout "$TIME_OUT" curl -fsSL -A Tailscale-Helper -o "$SCRIPTS_TGZ_PATH" "$scripts_tgz_url"
+    else
+        timeout "$TIME_OUT" wget -q -O "$SCRIPTS_TGZ_PATH" "$scripts_tgz_url"
+    fi
+}
+if download_archive; then
     log_info "📥  下载成功: $scripts_tgz_url"
 else
     log_error "❌  下载失败: $scripts_tgz_url"
@@ -364,7 +323,22 @@ log_info "✅  下载脚本包 + 校验成功!"
 
 # -------------------- 解压脚本包 --------------------
 log_info "📦  解压脚本包..."
-tar -xzf "$SCRIPTS_TGZ_PATH" -C "$CONFIG_DIR"
+stage=$(mktemp -d /etc/.smallts-install.XXXXXX)
+tar -xzf "$SCRIPTS_TGZ_PATH" -C "$stage"
+mkdir -p /var/lock
+exec 9>>/var/lock/small-tailscale-config.lock
+flock -x 9
+case "$(sh "$stage/source.sh")" in
+    none|project) ;;
+    *) log_error "检测到外部 Tailscale 安装，请先通过原安装渠道管理。"; exit 1 ;;
+esac
+for script in "$stage"/*.sh; do
+    [ ! -d "$CONFIG_DIR/${script##*/}" ] || { log_error "脚本路径已被目录占用"; exit 1; }
+done
+mkdir -p "$CONFIG_DIR"
+for script in "$stage"/*.sh; do
+    mv -f "$script" "$CONFIG_DIR/${script##*/}"
+done
 
 [ -f "$CONFIG_DIR/install.conf" ] || printf '# Tailscale 安装配置\n' > "$CONFIG_DIR/install.conf"
 
@@ -373,9 +347,6 @@ old_mirror_job='^[0-9]+ [23] \* \* \* /etc/tailscale/test_mirrors\.sh$'
 if current_crontab=$(crontab -l 2>/dev/null) && printf '%s\n' "$current_crontab" | grep -Eq "$old_mirror_job"; then
     printf '%s\n' "$current_crontab" | sed -E "\\|$old_mirror_job|d" | crontab -
 fi
-
-# 设置权限（避免通配符未匹配导致失败）
-find "$CONFIG_DIR" -maxdepth 1 -type f -name '*.sh' -exec chmod +x {} \;
 
 # 创建 helper 的软连接
 ln -sf "$CONFIG_DIR/helper.sh" /usr/bin/tailscale-helper
@@ -402,6 +373,7 @@ NOTIFY_PUSHPLUS=0
 PUSHPLUS_TOKEN=""
 EOF
 
+exec 9>&-
 log_info "✅  配置工具安装完毕!"
 log_info "✅  运行 tailscale-helper 可以打开功能菜单"
 

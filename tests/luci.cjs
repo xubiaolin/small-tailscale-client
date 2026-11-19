@@ -50,7 +50,7 @@ async function openView(t, name, replies = {}, writable = true) {
 			return async (...args) => {
 				const data = Object.fromEntries((spec.params || []).map((p, i) => [p, args[i]]));
 				window.calls.push({ object: spec.object, method: spec.method, data: structuredClone(data) });
-				const reply = window.replies[spec.method];
+				const reply = window.replies[spec.method === 'status_auth' ? 'status' : spec.method];
 				return spec.method === 'logs' ? reply[data.kind] : (reply || { ok: true });
 			};
 		} };
@@ -119,7 +119,7 @@ test('外部安装只显示来源和原渠道管理指引，所有写操作均�
 	assert.equal(await page.getByText('已停止', { exact: true }).count(), 0);
 	assert.ok(await page.getByRole('link', { name: '查看日志' }).isVisible());
 	assert.equal(await page.getByLabel('安装位置').isEnabled(), false);
-	assert.deepEqual(await page.evaluate(() => window.calls.map(x => x.method)), ['status', 'config']);
+	assert.deepEqual(await page.evaluate(() => window.calls.map(x => x.method)), ['status_auth', 'config']);
 });
 
 test('共享设置按用途展示，保存版本锁定、镜像和授权参数后可恢复跟随最新', async t => {
@@ -198,8 +198,10 @@ test('服务菜单进入节点管理与日志，只读用户可查看配置且�
 	for (const name of ['manage', 'logs']) assert.equal(menu[prefix + '/' + name].action.path, 'small-tailscale/' + name);
 	const acl = JSON.parse(readFileSync(path.join(share, 'rpcd/acl.d/luci-app-small-tailscale.json')))['luci-app-small-tailscale'];
 	assert.deepEqual(acl.read, { ubus: { 'small-tailscale': ['status', 'config', 'logs'], 'small-tailscale.network': ['preview'] } });
-	assert.deepEqual(acl.write, { ubus: { 'small-tailscale': ['save', 'install', 'start'], 'small-tailscale.network': ['apply'] } });
-	const page = await openView(t, 'manage', {}, false);
+	assert.deepEqual(acl.write, { ubus: { 'small-tailscale': ['save', 'install', 'start', 'status_auth'], 'small-tailscale.network': ['apply'] } });
+	const page = await openView(t, 'manage', {status: {source: 'project', installed: true, state: 'NeedsLogin', auth_url: 'https://login.example/a'}}, false);
+	assert.deepEqual(await page.evaluate(() => window.calls.map(x => x.method)), ['status', 'config']);
+	assert.equal(await page.getByRole('link', { name: '打开授权页面' }).count(), 0);
 	assert.ok(await page.getByRole('button', { name: '保存设置' }).isDisabled());
 	assert.ok(await page.getByRole('button', { name: '下载安装' }).isDisabled());
 });

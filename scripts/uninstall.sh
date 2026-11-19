@@ -1,37 +1,28 @@
 #!/bin/sh
-
 set -e
-[ -f /etc/tailscale/tools.sh ] && . /etc/tailscale/tools.sh
+. /etc/tailscale/tools.sh
 
-log_info "🛑  开始卸载Tailscale..."
+lock_config
+"$CONFIG_DIR/source.sh" --require-project
+log_info "🛑  开始卸载 Tailscale"
+network=/usr/libexec/rpcd/small-tailscale.network
+saved_cleanup=/usr/libexec/small-tailscale-network-cleanup
+if [ ! -x "$network" ]; then network=$saved_cleanup; fi
+if [ -x "$network" ]; then
+    "$network" cleanup || { log_error "无法清理项目网络配置，请查看错误后重试"; exit 1; }
+    rm -f "$saved_cleanup"
+fi
 
-# 停止并禁用 Tailscale 服务
-[ -f /etc/init.d/tailscale ] && {
+if [ -f /etc/init.d/tailscale ]; then
     /etc/init.d/tailscale stop
     /etc/init.d/tailscale disable
     rm -f /etc/init.d/tailscale
-}
+fi
 
-log_info "🗑️  删除所有相关文件..."
-# 删除所有可能的文件和目录
-rm -rf \
-    /etc/config/tailscale* \
-    /etc/init.d/tailscale* \
-    /usr/bin/tailscale \
-    /usr/bin/tailscaled \
-    /usr/local/bin/tailscale* \
-    /tmp/tailscaled \
-    /var/lib/tailscale* \
-    "$VERSION_FILE"
-
-# 删除 Tailscale 网络接口
-ip link delete tailscale0 2>/dev/null || true
-
-# 清理定时任务
-log_info "🧹  清理定时任务..."
-sed -i "\|$CONFIG_DIR/|d" /etc/crontabs/root
-/etc/init.d/cron restart
-
-log_info "🎉  Tailscale卸载完成！"
-log_info "🎉  重装Tailscale , 请运行  tailscale-helper"
-log_info "🎉  如需删除安装脚本,请运行  rm -rf $CONFIG_DIR"
+"$CONFIG_DIR/setup_cron.sh" --remove
+for link in /usr/bin/tailscale /usr/bin/tailscaled; do
+    binary=$(readlink "$link" || :)
+    case "$binary" in /usr/local/bin/tailscaled|/tmp/tailscaled) rm -f "$link" "$binary" ;; esac
+done
+rm -f /etc/config/tailscaled.state "$VERSION_FILE" "$RESTART_PENDING"
+log_info "Tailscale 已卸载。可用 tailscale-helper 重新安装。"

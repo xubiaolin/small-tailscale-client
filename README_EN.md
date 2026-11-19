@@ -1,7 +1,7 @@
 # small-tailscale-client
 
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
-![Version](https://img.shields.io/badge/version-v1.1.0-brightgreen)
+![Version](https://img.shields.io/badge/version-v1.2.4-brightgreen)
 ![Shell](https://img.shields.io/badge/shell-sh-blue)
 
 `small-tailscale-client` installs and manages Tailscale on OpenWrt routers. The `tailscale-helper` menu lets you install Tailscale on local storage or in RAM and configure automatic updates.
@@ -37,10 +37,10 @@ The installer downloads the management scripts from this repository. To install 
 
 | Official OpenWrt version | LuCI package |
 | --- | --- |
-| 24.10 | [Download the IPK (1.0.0-r1)](https://github.com/xubiaolin/small-tailscale-client/releases/download/luci-v1.0.0-r1/luci-app-small-tailscale_1.0.0-r1_all.ipk) |
-| 25.12 | [Download the APK (1.0.0-r1)](https://github.com/xubiaolin/small-tailscale-client/releases/download/luci-v1.0.0-r1/luci-app-small-tailscale-1.0.0-r1.apk) · [APK signing key](https://github.com/xubiaolin/small-tailscale-client/releases/download/luci-v1.0.0-r1/small-tailscale.pem) |
+| 24.10 | [Download the IPK (1.0.1-r1)](https://github.com/xubiaolin/small-tailscale-client/releases/download/luci-v1.0.1-r1/luci-app-small-tailscale_1.0.1-r1_all.ipk) |
+| 25.12 | [Download the APK (1.0.1-r1)](https://github.com/xubiaolin/small-tailscale-client/releases/download/luci-v1.0.1-r1/luci-app-small-tailscale-1.0.1-r1.apk) · [APK signing key](https://github.com/xubiaolin/small-tailscale-client/releases/download/luci-v1.0.1-r1/small-tailscale.pem) |
 
-Verify the downloads against the checksum list. [SHA256SUMS](https://github.com/xubiaolin/small-tailscale-client/releases/download/luci-v1.0.0-r1/SHA256SUMS) · [All release assets](https://github.com/xubiaolin/small-tailscale-client/releases/tag/luci-v1.0.0-r1)
+Verify the downloads against the checksum list. [SHA256SUMS](https://github.com/xubiaolin/small-tailscale-client/releases/download/luci-v1.0.1-r1/SHA256SUMS) · [All release assets](https://github.com/xubiaolin/small-tailscale-client/releases/tag/luci-v1.0.1-r1)
 
 On 25.12, copy the matching trusted `small-tailscale.pem` to `/etc/apk/keys/` on the router. In **System → Software**, update the package lists, upload the package, then sign in again. Open **Services → 精简版 Tailscale** to download the client, configure the node and view its logs. [Package build and installation instructions (Chinese)](README.md#在-luci-中安装和管理)
 
@@ -54,10 +54,9 @@ On 25.12, copy the matching trusted `small-tailscale.pem` to `/etc/apk/keys/` on
 
 1. **Download and execute the installation script**
 
-Run the commands in the same shell on your router. If GitHub downloads are slow, use the mirror in the first line. Skip the `export` line to use GitHub directly with the default settings.
+Run these commands on the router to fetch the installer from the project repository. To use a mirror, configure a service you trust under “GitHub download URL”.
 
 ```sh
-export GITHUB_DOWNLOAD_BASE_URL='https://git.mirrors.imoyuapp.win/https://github.com'
 download_base=${GITHUB_DOWNLOAD_BASE_URL:-https://github.com}
 URL="${download_base%/}/xubiaolin/small-tailscale-client/raw/refs/heads/main/install.sh"
 (curl -fL "$URL" -o /tmp/install.sh || wget -O /tmp/install.sh "$URL") && sh /tmp/install.sh
@@ -72,6 +71,8 @@ URL="${download_base%/}/xubiaolin/small-tailscale-client/raw/refs/heads/main/ins
 ```bash
 tailscale-helper
 ```
+
+For subnet routing, enter the LAN subnet in the LuCI plugin, save and start the node, then preview and apply the network configuration. Approve the subnet route in the Tailscale admin console. For manual setup, bind an unmanaged interface to `tailscale0`, leave the address, gateway and firewall zone empty, and add a forwarding rule restricted to incoming device `tailscale0` and the advertised destination subnet.
 
 ## 📦 Installation Modes
 
@@ -276,7 +277,7 @@ The environment variable takes precedence over the file. An empty value selects 
 
 ```bash
 opkg update
-opkg install libustream-openssl ca-bundle kmod-tun coreutils-timeout coreutils-nohup curl
+opkg install libustream-openssl ca-bundle kmod-tun coreutils-timeout curl
 ```
 
 ### Q2: How to switch installation modes?
@@ -294,7 +295,7 @@ tailscale-helper
 
 1. Confirm auto-update is enabled: `tailscale-helper` → Option 6
 2. Check scheduled tasks: `crontab -l`
-3. View update log: `cat /tmp/tailscale_update.log`
+3. View update log: `cat /var/log/tailscale_install.log`
 4. Ensure network connectivity is normal
 
 ### Q4: How to manually update Tailscale?
@@ -368,9 +369,8 @@ tailscale-helper
 
 | Log File                         | Description           |
 | -------------------------------- | --------------------- |
-| `/var/log/tailscale_install.log` | Installation log      |
-| `/var/log/tailscale.log`         | Tailscale service log |
-| `/tmp/tailscale_update.log`      | Update log            |
+| `/var/log/tailscale_install.log` | Installation and update log |
+| `logread -e tailscale` | Tailscale service messages in the system log |
 
 ### View Logs
 
@@ -379,10 +379,10 @@ tailscale-helper
 tail -f /var/log/tailscale_install.log
 
 # View service log
-tail -f /var/log/tailscale.log
+logread -f -e tailscale
 
 # View update log
-cat /tmp/tailscale_update.log
+cat /var/log/tailscale_install.log
 
 # View update log in menu
 tailscale-helper

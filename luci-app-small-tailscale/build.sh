@@ -14,7 +14,7 @@ sdk25=$(realpath "$2")
 SOURCE_DATE_EPOCH=${SOURCE_DATE_EPOCH:-$(git -C "$project" log -1 --format=%ct -- scripts luci-app-small-tailscale)}
 export SOURCE_DATE_EPOCH
 package=luci-app-small-tailscale
-version=1.0.0-r1
+version=1.0.1-r1
 dependencies='luci-base rpcd ucode ucode-mod-fs ucode-mod-uci firewall4 nftables-json kmod-tun ca-bundle curl coreutils-timeout'
 description='LuCI management for the small Tailscale client'
 out=${DIST_DIR:-"$project/dist"}
@@ -42,7 +42,7 @@ License: MIT
 Installed-Size: 0
 Description: $description
 CONTROL
-install -m 755 "$app/postinst" "$root/CONTROL/postinst"
+install -m 755 "$app/postinst" "$app/prerm" "$root/CONTROL/"
 TAR_OPTIONS='--owner=0 --group=0' PKG_SOURCE_DATE_EPOCH=$SOURCE_DATE_EPOCH \
     "$sdk24/scripts/ipkg-build" "$root" "$artifacts"
 rm -r "$root/CONTROL"
@@ -54,7 +54,7 @@ export STAGING_DIR_HOST
     --info "name:$package" --info "version:$version" --info arch:noarch \
     --info license:MIT --info "description:$description" --info "depends:$dependencies" \
     --script "post-install:$app/postinst" --script "post-upgrade:$app/postinst" \
-    --files "$root" --sign-key "$APK_SIGNING_KEY" --output "$artifacts/$package-$version.apk"
+    --script "pre-deinstall:$app/prerm" --files "$root" --sign-key "$APK_SIGNING_KEY" --output "$artifacts/$package-$version.apk"
 openssl pkey -in "$APK_SIGNING_KEY" -pubout -out "$artifacts/small-tailscale.pem"
 (cd "$artifacts" && sha256sum *.ipk *.apk *.pem > SHA256SUMS)
 cp "$artifacts/"* "$out/"

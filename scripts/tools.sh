@@ -4,6 +4,7 @@ CONFIG_DIR="/etc/tailscale"
 mkdir -p "$CONFIG_DIR"
 LOG_FILE="/var/log/tailscale_install.log"
 VERSION_FILE="$CONFIG_DIR/current_version"
+RESTART_PENDING="$CONFIG_DIR/restart_pending"
 NTF_CONF="$CONFIG_DIR/notify.conf"
 INST_CONF="$CONFIG_DIR/install.conf"
 TIME_OUT=30
@@ -11,62 +12,37 @@ TIME_OUT=30
 # 架构探测（统一入口）
 detect_arch() {
     local arch_raw="${1:-$(uname -m)}"
-    local arch=""
-    local endian=""
-
     case "$arch_raw" in
-        i386|i486|i586|i686)
-            arch="386"
+        i386|i486|i586|i686) echo 386 ;;
+        x86_64) echo amd64 ;;
+        armv7l|armv7|armhf|armv6l|armv8l) echo arm ;;
+        aarch64|arm64) echo arm64 ;;
+        mipsel|mipsel_24kc|mipsle) echo mipsle ;;
+        mips64el|mips64le) echo mips64le ;;
+        mips|mips64)
+            # ELF 头第六个字节记录用户空间的字节序。
+            local byte_order
+            byte_order=$(hexdump -s 5 -n 1 -e '1/1 "%u"' /bin/busybox) || return 1
+            case "$byte_order" in
+                1) echo "${arch_raw}le" ;;
+                2) echo "$arch_raw" ;;
+                *) log_error "无法识别 MIPS 字节序" >&2; return 1 ;;
+            esac
             ;;
-        x86_64)
-            arch="amd64"
-            ;;
-        armv7l|armv7|armhf|armv6l)
-            arch="arm"
-            ;;
-        aarch64|arm64|armv8l)
-            arch="arm64"
-            ;;
-        mips|mipsel|mipsel_24kc|mips64|mips64el)
-            arch="$arch_raw"
-            ;;
-        *)
-            log_error "❌  不支持的架构: $arch_raw"
-            log_error "❌  请在 https://github.com/CH3NGYZ/small-tailscale-openwrt/issues 反馈此架构"
-            return 1
-            ;;
-    esac
-
-    case "$arch" in
-        mips)
-            if command -v hexdump >/dev/null 2>&1 && command -v awk >/dev/null 2>&1; then
-                endian=$(echo -n I | hexdump -o 2>/dev/null | awk '{ print (substr($2,6,1)=="1") ? "le" : ""; exit }')
-                echo "mips${endian}"
-            else
-                echo "mips"
-            fi
-            ;;
-        mipsel|mipsel_24kc)
-            echo "mipsle"
-            ;;
-        mips64)
-            echo "mips64"
-            ;;
-        mips64el)
-            echo "mips64le"
-            ;;
-        *)
-            echo "$arch"
-            ;;
+        *) log_error "不支持的架构: $arch_raw" >&2; return 1 ;;
     esac
 }
 
-# 如果未在配置中指定 ARCH，则尝试自动探测一次（懒加载）
 ensure_arch() {
-    if [ -n "$ARCH" ]; then
-        return 0
-    fi
-    ARCH="$(detect_arch)" || return 1
+    # 老配置可能把 armv8l 或小端 mips64 记录成了错误的架构。
+    case "$ARCH" in
+        '') ARCH=$(detect_arch) ;;
+        arm64|mips64)
+            case "$(uname -m)" in
+                armv8l|mips64) ARCH=$(detect_arch) ;;
+            esac
+            ;;
+    esac
 }
 
 # 进程环境优先。定时任务和开机更新也可以读取同一份 NAME=URL 配置。
@@ -115,7 +91,7 @@ lock_config() {
     [ "${SMALL_TS_CONFIG_LOCKED:-}" != 1 ] || return 0
     mkdir -p /var/lock || return 1
     exec 9>>/var/lock/small-tailscale-config.lock
-    flock -x 9 || return 1
+    flock "${1:--x}" 9 || return 1
     export SMALL_TS_CONFIG_LOCKED=1
 }
 
@@ -124,63 +100,42 @@ unlock_config() {
     exec 9>&-
 }
 
+# 模式切换时保留旧程序，直至新服务重启成功，包括失败后的重试。
+finish_restart() {
+    local previous current
+    previous=$(cat "$RESTART_PENDING" 2>/dev/null) || return 0
+    current=$(readlink /usr/bin/tailscaled) || return 1
+    if [ "$(readlink /usr/bin/tailscale)" = "$current" ]; then
+        case "$current:$previous" in
+            /tmp/tailscaled:/usr/local/bin/tailscaled|/usr/local/bin/tailscaled:/tmp/tailscaled)
+                rm -f "$previous" || return 1 ;;
+        esac
+    fi
+    rm -f "$RESTART_PENDING"
+}
+
 valid_version() {
     case "$1" in ''|*[!v0-9.]*) return 1 ;; esac
     printf '%s\n' "$1" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+$'
 }
 
 webget() {
-    # $1 输出文件
-    # $2 URL
-    # $3 是否静默: echooff
-    # $4 禁止重定向: rediroff
-    local outfile="$1"
-    local url="$2"
-
-    local ua="Tailscale-Helper"
-
-    # 是否静默
-    local quiet=""
-    [ "$3" = "echooff" ] && quiet="-s"
-
-    # 是否禁用重定向
-    local redirect="-L"
-    [ "$4" = "rediroff" ] && redirect=""
-
-    # ----  优先使用 curl ----
+    local outfile=$1 url=$2 quiet="" redirect="-L" http_code
     if command -v curl >/dev/null 2>&1; then
-        http_code=$(timeout "$TIME_OUT" curl $quiet $redirect \
-            -A "$ua" \
-            -w "%{http_code}" \
-            -o "$outfile" \
-            "$url" 2>/dev/null)
-
+        [ "$3" != echooff ] || quiet=-s
+        [ "$4" != rediroff ] || redirect=""
+        http_code=$(timeout "$TIME_OUT" curl $quiet $redirect -A Tailscale-Helper \
+            -w '%{http_code}' -o "$outfile" "$url") || return 1
         case "$http_code" in 2*) return 0 ;; *) return 1 ;; esac
     fi
-
-    # ----  回退到 wget ----
     if command -v wget >/dev/null 2>&1; then
-        local q="--show-progress"
-        [ "$3" = "echooff" ] && q="-q"
-
-        local r=""
-        [ "$4" = "rediroff" ] && r="--max-redirect=0"
-
-        # wget 不直接返回 HTTP 状态码，需要解析 headers
-        headers=$(mktemp)
-        timeout "$TIME_OUT" wget $q $r \
-            --server-response --no-check-certificate \
-            --header="User-Agent: $ua" \
-            -O "$outfile" "$url" 2>"$headers"
-
-        # 提取最后的 HTTP 状态码
-        http_code=$(grep -oE 'HTTP/[0-9\.]+ [0-9]+' "$headers" | tail -n1 | awk '{print $2}')
-        rm -f "$headers"
-
-        case "$http_code" in 2*) return 0 ;; *) return 1 ;; esac
+        [ "$3" != echooff ] || quiet=-q
+        redirect=""
+        [ "$4" != rediroff ] || redirect=--max-redirect=0
+        timeout "$TIME_OUT" wget $quiet $redirect --header="User-Agent: Tailscale-Helper" -O "$outfile" "$url"
+        return $?
     fi
-
-    log_error "❌ curl 和 wget 都不存在"
+    log_error "curl 和 wget 都不存在"
     return 1
 }
 
@@ -246,19 +201,6 @@ sha256_file() {
     fi
     if command -v openssl >/dev/null 2>&1; then
         openssl dgst -sha256 "$file" | awk '{print $2}'
-        return 0
-    fi
-    return 1
-}
-
-md5_file() {
-    local file="$1"
-    if command -v md5sum >/dev/null 2>&1; then
-        md5sum "$file" | awk '{print $1}'
-        return 0
-    fi
-    if command -v openssl >/dev/null 2>&1; then
-        openssl dgst -md5 "$file" | awk '{print $2}'
         return 0
     fi
     return 1
@@ -338,8 +280,22 @@ send_notify() {
 
     # PushPlus
     if [ "$NOTIFY_PUSHPLUS" = "1" ] && [ -n "$PUSHPLUS_TOKEN" ]; then
-        pushplus_data="{\"token\":\"$PUSHPLUS_TOKEN\",\"title\":\"$title\",\"content\":\"$content\",\"template\":\"txt\"}"
-        send_via_curl_or_wget "http://www.pushplus.plus/send" "$pushplus_data" "POST" "Content-Type: application/json" && log_info "✅  PushPlus 通知已发送"
+        local pushplus_data reply code
+        . /usr/share/libubox/jshn.sh
+        json_init
+        json_add_string token "$PUSHPLUS_TOKEN"
+        json_add_string title "$title"
+        json_add_string content "$content"
+        json_add_string template txt
+        pushplus_data=$(json_dump) || return 1
+        if reply=$(curl --fail --silent --show-error --max-time "$TIME_OUT" \
+                -H 'Content-Type: application/json' --data-binary "$pushplus_data" https://www.pushplus.plus/send) &&
+           json_load "$reply" && json_get_var code code && [ "$code" = 200 ]; then
+            log_info "✅  PushPlus 通知已发送"
+        else
+            log_error "PushPlus 通知发送失败"
+            return 1
+        fi
     fi
 
     # 无任何通知方式启用

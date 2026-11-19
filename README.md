@@ -30,10 +30,10 @@
 
 | 官方 OpenWrt 版本 | 安装文件 | 安装前准备 |
 | --- | --- | --- |
-| 24.10 | [下载 IPK（1.0.0-r1）](https://github.com/xubiaolin/small-tailscale-client/releases/download/luci-v1.0.0-r1/luci-app-small-tailscale_1.0.0-r1_all.ipk) | 在 **系统 → 软件包** 中更新软件包列表 |
-| 25.12 | [下载 APK（1.0.0-r1）](https://github.com/xubiaolin/small-tailscale-client/releases/download/luci-v1.0.0-r1/luci-app-small-tailscale-1.0.0-r1.apk) | 更新软件包列表，并导入[该版本的签名公钥](https://github.com/xubiaolin/small-tailscale-client/releases/download/luci-v1.0.0-r1/small-tailscale.pem) |
+| 24.10 | [下载 IPK（1.0.1-r1）](https://github.com/xubiaolin/small-tailscale-client/releases/download/luci-v1.0.1-r1/luci-app-small-tailscale_1.0.1-r1_all.ipk) | 在 **系统 → 软件包** 中更新软件包列表 |
+| 25.12 | [下载 APK（1.0.1-r1）](https://github.com/xubiaolin/small-tailscale-client/releases/download/luci-v1.0.1-r1/luci-app-small-tailscale-1.0.1-r1.apk) | 更新软件包列表，并导入[该版本的签名公钥](https://github.com/xubiaolin/small-tailscale-client/releases/download/luci-v1.0.1-r1/small-tailscale.pem) |
 
-安装包适用于各 CPU 架构。先在电脑上核对下载文件的 SHA256。[校验清单](https://github.com/xubiaolin/small-tailscale-client/releases/download/luci-v1.0.0-r1/SHA256SUMS) · [此版本的全部文件](https://github.com/xubiaolin/small-tailscale-client/releases/tag/luci-v1.0.0-r1)
+安装包适用于各 CPU 架构。先在电脑上核对下载文件的 SHA256。[校验清单](https://github.com/xubiaolin/small-tailscale-client/releases/download/luci-v1.0.1-r1/SHA256SUMS) · [此版本的全部文件](https://github.com/xubiaolin/small-tailscale-client/releases/tag/luci-v1.0.1-r1)
 
 若使用 OpenWrt 25.12，请将可信的 `small-tailscale.pem` 导入路由器一次。以下命令在公钥所在目录运行，把地址改成路由器的管理地址。
 
@@ -47,13 +47,13 @@ ssh root@192.168.1.1 'cat > /etc/apk/keys/small-tailscale.pem' < small-tailscale
 
 ```sh
 # OpenWrt 24.10
-opkg update && opkg install /tmp/luci-app-small-tailscale_1.0.0-r1_all.ipk
+opkg update && opkg install /tmp/luci-app-small-tailscale_1.0.1-r1_all.ipk
 
 # OpenWrt 25.12，已导入公钥
-apk update && apk add /tmp/luci-app-small-tailscale-1.0.0-r1.apk
+apk update && apk add /tmp/luci-app-small-tailscale-1.0.1-r1.apk
 ```
 
-25.12 也可在与可信校验清单核对 APK 的 SHA256 后，单次执行 `apk add --allow-untrusted /tmp/luci-app-small-tailscale-1.0.0-r1.apk`，跳过本次本地包的签名验证。
+25.12 也可在与可信校验清单核对 APK 的 SHA256 后，单次执行 `apk add --allow-untrusted /tmp/luci-app-small-tailscale-1.0.1-r1.apk`，跳过本次本地包的签名验证。
 
 ### 从源码构建安装包
 
@@ -82,10 +82,9 @@ sh luci-app-small-tailscale/build.sh /path/to/24.10.8-sdk /path/to/25.12.6-sdk
 
 ### 1. 运行安装脚本
 
-在 OpenWrt 终端运行以下命令。第一行启用下载镜像。如果路由器可以直连 GitHub，可跳过这行。
+在 OpenWrt 终端从项目仓库下载安装脚本。需要镜像时，可在“下载地址配置”中设置自己信任的服务。
 
 ```sh
-export GITHUB_DOWNLOAD_BASE_URL='https://git.mirrors.imoyuapp.win/https://github.com'
 download_base=${GITHUB_DOWNLOAD_BASE_URL:-https://github.com}
 URL="${download_base%/}/xubiaolin/small-tailscale-client/raw/refs/heads/main/install.sh"
 (curl -fL "$URL" -o /tmp/install.sh || wget -O /tmp/install.sh "$URL") && sh /tmp/install.sh
@@ -102,18 +101,11 @@ URL="${download_base%/}/xubiaolin/small-tailscale-client/raw/refs/heads/main/ins
 tailscale-helper
 ```
 
-### 3. 创建 Tailscale 接口
+### 3. 按需配置子网转发
 
-登录 OpenWrt 后，进入 **网络 → 接口**，按照下表完成配置：
+只连接路由器自身时，完成 Tailscale 授权即可。需要通过路由器访问局域网时，在插件的 **节点管理** 中填写要通告的网段（例如 `192.168.1.0/24`），保存并启动节点，然后预览并应用网络配置。在 Tailscale 管理后台批准对应的子网路由。
 
-| 操作与配置 | 参考截图 |
-| :--- | :---: |
-| **① 新建接口**<br><br>点击 **添加新接口**。<br><br>接口名称：`tailscale`<br>协议：**静态地址** | <img width="400" alt="创建 Tailscale 接口" src="https://github.com/user-attachments/assets/c600fe8b-099b-407f-8dd8-539ac27f9cae"> |
-| **② 配置 IPv4 地址**<br><br>IPv4 地址：当前设备在 Tailscale 管理后台中分配的 IP，例如 `100.64.0.1`<br>子网掩码：`255.0.0.0`<br>网关：你的网关地址，例如 `192.168.1.1`<br>广播地址：保持默认<br><br>**注意：** **IPv4地址不是 OpenWrt 的 LAN 地址。** | <img width="400" alt="配置 IPv4 地址" src="https://github.com/user-attachments/assets/bddbbf80-8ad0-434c-a87d-7351604844b7"> |
-| **③ 配置防火墙**<br><br>防火墙区域：`lan`<br><br>完成后点击 **保存**。 | <img width="400" alt="配置防火墙区域" src="https://github.com/user-attachments/assets/24351983-2dbc-4b15-b713-4927a0f6e60b"> |
-
-> [!NOTE]
-> 保存后，`tailscale` 接口会绑定到 `tailscale0`，并加入 `lan` 防火墙区域。
+手动配置时，在 **网络 → 接口** 创建绑定 `tailscale0` 的非托管接口，保留空的防火墙区域、地址和网关。然后在 **网络 → 防火墙 → 通信规则** 中添加转发规则，来源与目标区域均选任意，限制入站设备为 `tailscale0`、目标地址为实际通告的网段，协议任选，动作为接受。路由器自身的管理访问继续由已有入站规则控制。
 
 ## 安装模式
 
@@ -315,7 +307,7 @@ PUSHPLUS_TOKEN=""
 
 ```sh
 opkg update
-opkg install libustream-openssl ca-bundle kmod-tun coreutils-timeout coreutils-nohup curl
+opkg install libustream-openssl ca-bundle kmod-tun coreutils-timeout curl
 ```
 
 </details>
@@ -334,7 +326,7 @@ opkg install libustream-openssl ca-bundle kmod-tun coreutils-timeout coreutils-n
 
 1. 运行 `tailscale-helper`，通过选项 `6` 确认自动更新已启用
 2. 执行 `crontab -l` 检查定时任务
-3. 执行 `cat /tmp/tailscale_update.log` 查看更新日志
+3. 执行 `cat /var/log/tailscale_install.log` 查看更新日志
 4. 确认设备网络连接正常
 
 </details>
@@ -379,19 +371,18 @@ cat /etc/tailscale/current_version
 
 | 日志 | 路径 |
 | :--- | :--- |
-| 安装日志 | `/var/log/tailscale_install.log` |
-| Tailscale 服务日志 | `/var/log/tailscale.log` |
-| 更新日志 | `/tmp/tailscale_update.log` |
+| 安装与更新日志 | `/var/log/tailscale_install.log` |
+| Tailscale 服务日志 | 系统日志，可用 `logread -e tailscale` 查看 |
 
 ```sh
 # 实时查看安装日志
 tail -f /var/log/tailscale_install.log
 
 # 实时查看服务日志
-tail -f /var/log/tailscale.log
+logread -f -e tailscale
 
 # 查看更新日志
-cat /tmp/tailscale_update.log
+cat /var/log/tailscale_install.log
 ```
 
 也可以运行 `tailscale-helper`，选择选项 `14` 查看更新日志。
