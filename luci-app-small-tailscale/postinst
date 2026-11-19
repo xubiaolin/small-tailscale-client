@@ -1,5 +1,13 @@
 #!/bin/sh
+set -e
 [ -z "${IPKG_INSTROOT:-}" ] || exit 0
+# 包安装事务内只接管已识别的项目脚本，刷新 init 定义不会操作运行中的服务。
+share=/usr/share/small-tailscale
+mkdir -p /var/lock
+(
+    flock -x 9
+    "$share/sync" --existing
+) 9>>/var/lock/small-tailscale-config.lock
 rm -f /tmp/luci-indexcache.*
 rm -rf /tmp/luci-modulecache/
 /etc/init.d/rpcd reload 2>/dev/null || true

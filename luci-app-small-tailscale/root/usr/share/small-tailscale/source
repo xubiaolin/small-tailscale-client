@@ -7,20 +7,27 @@ for file in /usr/lib/opkg/info/tailscale.control /usr/lib/opkg/info/tailscaled.c
 	/usr/sbin/tailscaled /etc/config/tailscale; do
 	exists "$file" && external
 done
-if command -v apk >/dev/null && { apk info -e tailscale || apk info -e tailscaled; } >/dev/null 2>&1; then
-	external
+# post-install 期间 apk 持有事务锁。直接读取已安装清单，也检查事务已释放到磁盘的程序和配置。
+if command -v apk >/dev/null; then
+	db=/lib/apk/db/installed
+	[ -r "$db" ] && [ -s "$db" ] || external
+	grep -Eq '^P:(tailscale|tailscaled)$' "$db"
+	[ "$?" = 1 ] || external
 fi
 project=false
 if exists /etc/tailscale; then
 	[ -d /etc/tailscale ] && [ ! -L /etc/tailscale ] || external
-	if [ -f /etc/tailscale/tools.sh ] && [ -f /etc/tailscale/helper.sh ]; then
+	if [ -f /etc/tailscale/tools.sh ] && [ ! -L /etc/tailscale/tools.sh ] &&
+	   [ -f /etc/tailscale/helper.sh ] && [ ! -L /etc/tailscale/helper.sh ] &&
+	   grep -Fq '/etc/tailscale/tools.sh' /etc/tailscale/helper.sh &&
+	   grep -Fq '$CONFIG_DIR/tailscale_up_generator.sh' /etc/tailscale/helper.sh; then
 		project=true
 	elif [ -n "$(ls -A /etc/tailscale)" ]; then
 		external
 	fi
 fi
 if exists /etc/init.d/tailscale; then
-	[ "$project" = true ] && grep -Fq '/etc/tailscale/tools.sh' /etc/init.d/tailscale || external
+	[ ! -L /etc/init.d/tailscale ] && [ "$project" = true ] && grep -Fq '/etc/tailscale/tools.sh' /etc/init.d/tailscale || external
 fi
 if exists /usr/bin/tailscale-helper; then
 	[ "$project" = true ] && [ "$(readlink /usr/bin/tailscale-helper)" = /etc/tailscale/helper.sh ] || external

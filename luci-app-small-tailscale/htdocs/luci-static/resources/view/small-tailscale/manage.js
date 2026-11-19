@@ -14,7 +14,7 @@ function method(name, params, object) {
 
 const status = method('status');
 const config = method('config');
-const save = method('save', ['mode', 'auto_update', 'pinned_version', 'mirror', 'params']);
+const save = method('save', ['mode', 'auto_update', 'pinned_version', 'mirror', 'params', 'previous']);
 const install = method('install');
 const start = method('start');
 const preview = method('preview', ['routes'], 'small-tailscale.network');
@@ -78,7 +78,6 @@ const labels = {
 	'exit-node': '使用出口节点', 'login-server': '控制服务器', 'auth-key': '节点授权密钥',
 	'client-id': '客户端 ID', 'client-secret': '客户端密钥', 'id-token': '身份令牌'
 };
-const secrets = ['auth-key', 'client-secret', 'id-token'];
 
 function input(id, value, type) {
 	const el = E('input', { id, type: type || 'text', class: 'cbi-input-text',
@@ -117,7 +116,7 @@ return view.extend({
 			const value = settings.params[opt.key] || '';
 			const ctrl = opt.type === 'flag'
 				? choice(id, [['', '使用默认值'], ['true', '启用'], ['false', '禁用']], value)
-				: input(id, value, secrets.includes(opt.key) ? 'password' : 'text');
+				: input(id, value, opt.type === 'secret' ? 'password' : 'text');
 			controls[opt.key] = ctrl;
 			const group = groups.findIndex(g => g[1].includes(opt.key));
 			const row = field(labels[opt.key] || '--' + opt.key, ctrl, opt.description);
@@ -204,10 +203,20 @@ return view.extend({
 				for (const [key, ctrl] of Object.entries(controls)) {
 					if (ctrl.value !== '') params[key] = ctrl.value;
 				}
-				await save(mode.value, automatic.checked, version, mirror.value.trim(), params);
-				settings.pinned_version = version;
-				for (const key of secrets) {
-					if (params[key]) controls[key].value = '••••';
+				const previous = {
+					mode: settings.mode, auto_update: settings.auto_update, pinned_version: settings.pinned_version,
+					mirror: settings.mirror, params: settings.params
+				};
+				const next = { mode: mode.value, auto_update: automatic.checked, pinned_version: version, mirror: mirror.value.trim(), params };
+				const dirty = Object.keys(next).some(key => key !== 'params' && next[key] !== previous[key]) ||
+					Object.keys(controls).some(key => params[key] !== previous.params[key]);
+				if (dirty) {
+					await save(next.mode, next.auto_update, next.pinned_version, next.mirror, params, previous);
+					mirror.value = next.mirror = next.mirror.replace(/\/$/, '');
+					for (const opt of settings.options) {
+						if (opt.type === 'secret' && params[opt.key]) controls[opt.key].value = params[opt.key] = '••••';
+					}
+					Object.assign(settings, next);
 				}
 				if (action) await action();
 				message.textContent = success;

@@ -13,7 +13,8 @@ case "$MODE" in
     *) log_error "❌  未配置有效的安装模式"; exit 1 ;;
 esac
 recorded=$(cat "$VERSION_FILE" 2>/dev/null)
-if [ "$reason" != --manual ] && [ "$AUTO_UPDATE" != true ] && [ -x "$binary" ]; then
+if [ "$reason" != --manual ] && [ "$AUTO_UPDATE" != true ] && [ -x "$binary" ] &&
+   { [ -z "$PINNED_VERSION" ] || [ "$PINNED_VERSION" = "$recorded" ]; }; then
     log_info "自动更新已关闭，使用当前版本"
     exit 0
 fi
