@@ -8,6 +8,8 @@
 
 - [01 共享命令行](issues/01-shared-cli.md) 已集成。
 
+- [02 服务和日志](issues/02-rpc.md) 及 [03 网络配置](issues/03-network.md) 已集成。
+
 ## Fog
 
 各工单按依赖关系集成。
