@@ -1,0 +1,58 @@
+#!/bin/sh
+# 软件源包、非本项目的服务或同名程序优先，避免覆盖混装设备。
+external() {
+	if [ "${require_project:-}" = true ]; then
+		echo '检测到外部 Tailscale 安装或无法确认来源，已取消操作。' >&2
+		exit 1
+	fi
+	echo external
+	exit 0
+}
+require_project=false
+[ "${1:-}" != --require-project ] || require_project=true
+exists() { [ -e "$1" ] || [ -L "$1" ]; }
+
+for file in /usr/lib/opkg/info/tailscale.control /usr/lib/opkg/info/tailscaled.control \
+	/usr/sbin/tailscale /usr/sbin/tailscaled /etc/config/tailscale; do
+	exists "$file" && external
+done
+# post-install 期间 apk 持有事务锁。直接读取已安装清单，也检查事务已释放到磁盘的程序和配置。
+if command -v apk >/dev/null; then
+	db=/lib/apk/db/installed
+	[ -r "$db" ] && [ -s "$db" ] || external
+	grep -Eq '^P:(tailscale|tailscaled)$' "$db"
+	[ "$?" = 1 ] || external
+fi
+project=false
+if exists /etc/tailscale; then
+	[ -d /etc/tailscale ] && [ ! -L /etc/tailscale ] || external
+	if [ -f /etc/tailscale/tools.sh ] && [ ! -L /etc/tailscale/tools.sh ] &&
+	   [ -f /etc/tailscale/helper.sh ] && [ ! -L /etc/tailscale/helper.sh ] &&
+	   grep -Fq '/etc/tailscale/tools.sh' /etc/tailscale/helper.sh &&
+	   grep -Eq '\$CONFIG_DIR/tailscale_up_generat[oe]r\.sh' /etc/tailscale/helper.sh; then
+		project=true
+	elif [ -n "$(ls -A /etc/tailscale | grep -vx github-download.env)" ]; then
+		external
+	fi
+fi
+if exists /etc/init.d/tailscale; then
+	[ ! -L /etc/init.d/tailscale ] && [ "$project" = true ] && grep -Fq '/etc/tailscale/tools.sh' /etc/init.d/tailscale || external
+fi
+if exists /usr/bin/tailscale-helper; then
+	[ "$project" = true ] && [ "$(readlink /usr/bin/tailscale-helper)" = /etc/tailscale/helper.sh ] || external
+fi
+for file in /usr/bin/tailscale /usr/bin/tailscaled; do
+	exists "$file" || continue
+	[ "$project" = true ] || external
+	case "$(readlink "$file")" in /usr/local/bin/tailscaled|/tmp/tailscaled) ;; *) external ;; esac
+done
+for file in /usr/local/bin/tailscaled /tmp/tailscaled /etc/config/tailscaled.state; do
+	if exists "$file"; then [ "$project" = true ] || external; fi
+done
+if [ "$require_project" = true ]; then
+	[ "$project" = true ] || external
+elif [ "$project" = true ]; then
+	echo project
+else
+	echo none
+fi

@@ -85,6 +85,7 @@ grep -qx 'v1.92.0' current_version
 cp install.conf /tmp/config-before
 cat >/etc/init.d/tailscale <<'MOCK'
 #!/bin/sh
+# /etc/tailscale/tools.sh
 echo "$1" >>/tmp/service-actions
 MOCK
 chmod +x /etc/init.d/tailscale
@@ -105,11 +106,15 @@ echo "$2" >>/tmp/service-actions
 MOCK
 printf '#!/bin/sh\nexit 0\n' >/etc/init.d/cron
 chmod +x /etc/init.d/cron
+backup_job='0 1 * * * tar -czf /tmp/node-backup.tgz /etc/tailscale/'
+echo "$backup_job" >/etc/crontabs/root
 ./setup.sh --local --version=v1.95.0 --auto-update >/dev/null
 grep -qx PINNED_VERSION=v1.95.0 install.conf
 grep -qx v1.95.0 /usr/local/bin/tailscaled
 grep -qx enable /tmp/service-actions
 grep -qx restart /tmp/service-actions
+[ ! -e /tmp/tailscaled ]
+grep -Fxq "$backup_job" /etc/crontabs/root
 rm /tmp/service-actions
 ./setup_service.sh --refresh >/dev/null
 [ ! -e /tmp/service-actions ] || { echo '刷新脚本时操作了正在运行的服务' >&2; exit 1; }
@@ -133,6 +138,7 @@ grep -qx v1.95.0 /usr/local/bin/tailscaled
 grep -qx MODE=tmp install.conf
 [ "$(readlink /usr/bin/tailscale)" = /tmp/tailscaled ]
 grep -qx v1.95.0 /tmp/tailscaled
+[ ! -e /usr/local/bin/tailscaled ]
 
 # 从旧节点的菜单直接登录、启动和手动更新。
 printf '#!/bin/sh\nprintf "%%s\\n" "$@" >>/tmp/menu-arguments\n' >/usr/local/bin/tailscale
@@ -155,3 +161,85 @@ printf '%s\n' "$preview" | grep -Fq -- '--auth-key=••••'
 if printf '%s\n' "$preview" | grep -Fq fixture-secret; then exit 1; fi
 ./tailscale_up_generator.sh --run
 grep -qxF -- '--auth-key=fixture-secret' /tmp/menu-arguments
+
+# 本地版本先交给 procd，启动后的版本检查在后台执行。
+./setup.sh --local --version=v1.95.0 --auto-update >/dev/null
+./update_ctl.sh --version=latest >/dev/null
+mv autoupdate.sh autoupdate.saved
+cat > autoupdate.sh <<'MOCK'
+#!/bin/sh
+touch /tmp/boot-download
+while [ ! -f /tmp/boot-returned ]; do sleep 0.1; done
+MOCK
+chmod +x autoupdate.sh
+(
+    . /etc/init.d/tailscale
+    procd_open_instance() { :; }
+    procd_close_instance() { :; }
+    procd_set_param() { if [ "$1" = command ]; then echo "$2" > /tmp/boot-binary; fi; }
+    start_service
+    [ ! -e /tmp/boot-download ]
+    service_started
+    touch /tmp/boot-returned
+) >/dev/null
+for attempt in 1 2 3 4 5; do [ ! -f /tmp/boot-download ] || break; sleep 0.1; done
+[ -f /tmp/boot-download ]
+grep -qx /usr/local/bin/tailscaled /tmp/boot-binary
+mv autoupdate.saved autoupdate.sh
+
+# 更新已校验写入。即使关闭了自动更新，下一次调用也要重试失败的服务重启。
+cat >/etc/rc.common <<'MOCK'
+#!/bin/sh
+echo "$2" >> /tmp/restarts
+[ "$2" != restart ] || [ ! -f /tmp/fail-restart ]
+MOCK
+./update_ctl.sh --version=v1.95.1 >/dev/null
+touch /tmp/fail-restart
+if ./autoupdate.sh --manual >/dev/null; then exit 1; fi
+grep -qx v1.95.1 current_version
+rm /tmp/fail-restart
+./update_ctl.sh off >/dev/null
+./autoupdate.sh >/dev/null
+./autoupdate.sh >/dev/null
+[ "$(grep -cx restart /tmp/restarts)" = 2 ]
+
+touch /tmp/fail-restart
+if ./setup.sh --tmp --version=v1.95.1 >/dev/null; then exit 1; fi
+[ -x /usr/local/bin/tailscaled ]
+rm /tmp/fail-restart
+./autoupdate.sh --manual >/dev/null
+[ ! -e /usr/local/bin/tailscaled ]
+./setup.sh --local --version=v1.95.1 >/dev/null
+
+# 系统软件源接管后保护服务、程序和节点身份；旧拼写的本项目 helper 仍可接入。
+mkdir -p /etc/config
+echo identity > /etc/config/tailscaled.state
+mv helper.sh helper.saved
+sed 's/tailscale_up_generator/tailscale_up_generater/g' helper.saved > helper.sh
+[ "$(./source.sh)" = project ]
+mv helper.saved helper.sh
+touch /etc/config/tailscale
+[ "$(./source.sh)" = external ]
+for action in './setup.sh --saved' './autoupdate.sh --manual' './uninstall.sh'; do
+    if $action >/dev/null 2>&1; then exit 1; fi
+done
+[ -x /etc/init.d/tailscale ]
+grep -qx identity /etc/config/tailscaled.state
+grep -qx v1.95.1 /usr/local/bin/tailscaled
+rm /etc/config/tailscale
+
+# 清理失败时可重试；成功后保留不属于项目的备份、脚本和任务。
+mkdir -p /usr/libexec/rpcd
+network=/usr/libexec/rpcd/small-tailscale.network
+printf '#!/bin/sh\n[ "$1" = cleanup ] && [ ! -e /tmp/network-error ]\n' > "$network"
+chmod +x "$network"
+touch /tmp/network-error /usr/local/bin/tailscale-backup /etc/config/tailscaled.state.bak
+if ./uninstall.sh >/dev/null; then exit 1; fi
+[ -x /etc/init.d/tailscale ]
+rm /tmp/network-error
+./uninstall.sh >/dev/null
+[ -f /usr/local/bin/tailscale-backup ]
+[ -f /etc/config/tailscaled.state.bak ]
+[ ! -e /etc/config/tailscaled.state ]
+[ ! -e /usr/local/bin/tailscaled ]
+[ "$(cat /etc/crontabs/root)" = "$backup_job" ]

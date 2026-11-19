@@ -52,4 +52,16 @@ else
     grep -Fx "Version: $version" /tmp/package.control
     grep -Fx "Architecture: all" /tmp/package.control
 fi
+# 单独移除 LuCI 时，包管理器应执行卸载钩子，保留节点和后续清理入口。
+touch /etc/config/network
+uci set network.smallts=interface
+uci set network.smallts.device=tailscale0
+uci set network.smallts.proto=none
+uci set network.smallts.small_tailscale_managed=1
+uci commit network
+if command -v apk >/dev/null; then apk del "$name"; else opkg remove "$name"; fi
+test ! -e /usr/libexec/rpcd/small-tailscale.network
+test -x /usr/libexec/small-tailscale-network-cleanup
+test "$(uci get network.smallts.device)" = tailscale0
+
 OPENWRT

@@ -2,7 +2,7 @@
 
 set -o pipefail
 
-SCRIPT_VERSION="v1.2.3"
+SCRIPT_VERSION="v1.2.4"
 
 # 检查并引入 /etc/tailscale/tools.sh 文件
 [ -f /etc/tailscale/tools.sh ] && . /etc/tailscale/tools.sh
@@ -38,6 +38,9 @@ show_menu() {
 
 # 处理用户选择
 handle_choice() {
+    case "$1" in
+        1|2|3|4|5|6|7|8|11|13) "$CONFIG_DIR/source.sh" --require-project || return 1 ;;
+    esac
     case $1 in
         1)
             $CONFIG_DIR/setup.sh

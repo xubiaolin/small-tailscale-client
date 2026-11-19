@@ -39,6 +39,22 @@ input_before=$(nft list chain inet fw4 input)
 field "$(preview '192.168.1.7/24')" error >/dev/null
 field "$(preview '192.168.1.0/33')" error >/dev/null
 field "$(apply '10.0.0.0/8' "$token")" error >/dev/null
+# 使用登录会话的专有暂存区，既有预览也不能覆盖其他浏览器未提交的更改。
+sid=$(field "$(ubus call session create '{}')" ubus_rpc_session)
+ubus call session grant "{\"ubus_rpc_session\":\"$sid\",\"scope\":\"uci\",\"objects\":[[\"network\",\"write\"]]}"
+ubus call uci set "{\"ubus_rpc_session\":\"$sid\",\"config\":\"network\",\"section\":\"loopback\",\"values\":{\"auto\":\"0\"}}"
+field "$(preview '192.168.1.0/24')" error >/dev/null
+field "$(apply '192.168.1.0/24' "$token")" error >/dev/null
+[ "$before" = "$(snapshot)" ]
+ubus call uci revert "{\"ubus_rpc_session\":\"$sid\",\"config\":\"network\"}"
+# 已应用、等待确认的 rpcd 回滚快照也能覆盖防火墙。
+ubus call session grant "{\"ubus_rpc_session\":\"$sid\",\"scope\":\"uci\",\"objects\":[[\"firewall\",\"write\"]]}"
+ubus call uci add "{\"ubus_rpc_session\":\"$sid\",\"config\":\"firewall\",\"type\":\"rule\",\"name\":\"sessiontest\",\"values\":{\"enabled\":\"0\"}}" >/dev/null
+ubus call uci apply "{\"ubus_rpc_session\":\"$sid\",\"rollback\":true,\"timeout\":60}"
+field "$(preview '192.168.1.0/24')" error >/dev/null
+ubus call uci rollback "{\"ubus_rpc_session\":\"$sid\"}"
+[ "$before" = "$(snapshot)" ]
+ubus call session destroy "{\"ubus_rpc_session\":\"$sid\"}"
 applied=$(field "$(apply '192.168.1.0/24' "$token")" token)
 field "$(apply '192.168.1.0/24' "$applied")" token >/dev/null
 uci show network | grep -Fq "device='tailscale0'"
@@ -96,4 +112,24 @@ field "$(apply '192.168.1.0/24' "$token")" error >/dev/null
 [ "$before" = "$(snapshot)" ]
 mv /sbin/fw4.real /sbin/fw4
 field "$(apply '192.168.1.0/24' "$token")" token >/dev/null
+# 单独移除网页插件保留运行中的策略，随后仍可清理节点。
+netrpc=/usr/libexec/rpcd/small-tailscale.network
+sh /src/luci-app-small-tailscale/prerm
+rm "$netrpc"
+nft list chain inet fw4 forward | grep -Fq 'iifname "tailscale0"'
+/usr/libexec/small-tailscale-network-cleanup cleanup
+if uci -q get firewall.smallts_subnets || uci -q get network.smallts; then exit 1; fi
+if nft list chain inet fw4 forward | grep -Fq 'iifname "tailscale0"'; then exit 1; fi
+# 用户原有的同名接口和已修改的规则必须保留。
+cp /usr/libexec/small-tailscale-network-cleanup "$netrpc"
+uci set network.smallts=interface
+uci set network.smallts.proto=none
+uci set network.smallts.device=tailscale0
+uci commit network
+confirm '10.0.0.0/8'
+uci set firewall.smallts_subnets.enabled=0
+uci commit firewall
+before=$(snapshot)
+"$netrpc" cleanup
+[ "$before" = "$(snapshot)" ]
 SCENARIOS

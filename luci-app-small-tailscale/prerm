@@ -1,0 +1,12 @@
+#!/bin/sh
+set -eu
+[ -z "${IPKG_INSTROOT:-}" ] || exit 0
+# 卸载网页后节点继续运行，保留以后由 tailscale-helper 调用的清理入口。
+if uci -q get firewall.smallts_subnets >/dev/null || [ "$(uci -q get network.smallts.small_tailscale_managed)" = 1 ]; then
+    cleanup=/usr/libexec/small-tailscale-network-cleanup
+    staged=$(mktemp "$cleanup.XXXXXX")
+    trap 'rm -f "$staged"' EXIT
+    cp /usr/libexec/rpcd/small-tailscale.network "$staged"
+    chmod 755 "$staged"
+    mv -f "$staged" "$cleanup"
+fi

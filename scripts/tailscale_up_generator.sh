@@ -45,11 +45,23 @@ $key:"}
             [ "$entry" != "$entries" ] || continue
             value=${line#*=}
             case "$value" in \"*\") value=${value#\"}; value=${value%\"} ;; esac
+            # 已清除的持久首选项须显式传回默认值，裸 up 会沿用旧值。
+            if [ -z "$value" ]; then
+                case "$key" in
+                    --advertise-routes|--advertise-tags|--exit-node|--hostname|--operator) ;;
+                    --accept-dns|--snat-subnet-routes) value=true ;;
+                    --accept-routes|--advertise-connector|--advertise-exit-node|--exit-node-allow-lan-access|--shields-up|--ssh|--stateful-filtering) value=false ;;
+                    --login-server) value=https://controlplane.tailscale.com ;;
+                    --netfilter-mode) value=on ;;
+                    *) continue ;;
+                esac
+            fi
             if [ "$action" = preview ] && [ "${entry%%:*}" = secret ]; then value='••••'; fi
             set -- "$@" "$key=$value"
         done < "$CONF_FILE"
     fi
     if [ "$action" = run ]; then
+        /etc/tailscale/source.sh --require-project || return 1
         tailscale "$@"
         return $?
     fi
@@ -92,7 +104,7 @@ edit_param() (
     if [ -f "$CONF_FILE" ]; then
         awk -v key="$key" 'index($0,key "=") != 1' "$CONF_FILE" > "$tmp" || { rm -f "$tmp"; return 1; }
     fi
-    if [ -n "$value" ]; then
+    if [ -n "$value" ] || { [ "$type" != secret ] && [ -f "$CONF_FILE" ] && grep -q "^$key=" "$CONF_FILE"; }; then
         printf '%s="%s"\n' "$key" "$value" >> "$tmp" || { rm -f "$tmp"; return 1; }
     fi
     mv "$tmp" "$CONF_FILE"

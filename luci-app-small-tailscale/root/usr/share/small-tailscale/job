@@ -11,8 +11,18 @@ case "$1" in
 		action=$1
 		exec 9>>/var/lock/small-tailscale-job.lock
 		flock -n 9 || exit 1
+		rm -f "$run/start-auth"
 		# 后台任务继承锁，关闭 RPC 的标准流，rpcd 可以立即回应。
-		( "$0" worker "$action" 9>&-; exit $? ) </dev/null >"$run/$action.log" 2>&1 &
+		(
+			if [ "$action" = start ]; then
+				trap 'rm -f "$run/start-auth"' EXIT
+				set -o pipefail
+				"$0" worker start 9>&- 2>&1 | /usr/libexec/rpcd/small-tailscale stream-start 9>&-
+			else
+				"$0" worker "$action" 9>&-
+			fi
+			exit $?
+		) </dev/null >"$run/$action.log" 2>&1 &
 		exit 0 ;;
 	worker) action=$2 ;;
 	*) exit 1 ;;
@@ -31,10 +41,13 @@ case "$action" in
 		if ! /etc/init.d/tailscale running; then /etc/init.d/tailscale start; fi
 		# procd 异步拉起守护进程，等待本地 API 可响应（待授权也会输出 JSON）。
 		tries=0
-		until /usr/bin/tailscale status --json 2>/dev/null | grep -q '"BackendState"'; do
+		until /usr/bin/tailscale status --json --peers=false 2>/dev/null | grep -q '"BackendState"'; do
 			tries=$((tries + 1))
 			[ "$tries" -lt 20 ] || { echo 'Tailscale 服务尚未就绪'; exit 1; }
 			sleep 1
 		done
-		exec "$conf/tailscale_up_generator.sh" --run ;;
+		# 网页关闭后也必须释放任务锁；CLI 配置的 --timeout=0 仍受此上限约束。
+		if timeout -k 5 300 "$conf/tailscale_up_generator.sh" --run; then exit 0; else rc=$?; fi
+		case "$rc" in 124|137) echo '网页授权等待已超时，可修改设置后重试。' ;; esac
+		exit "$rc" ;;
 esac
