@@ -37,7 +37,8 @@ def release_files(tag, repo):
             raise SystemExit(f"{filename} 的 LuCI Release 链接与 {tag} 的四项资产或版本页不符")
         for branch, name in (("24.10", ipk), ("25.12", apk)):
             row = re.search(rf"^\|\s*{re.escape(branch)}\s*\|(.+)$", readme, re.MULTILINE)
-            if not row or f"]({urls[name]})" not in row[1]:
+            package_link = re.search(r"\]\(([^\s)]+)\)", row[1]) if row else None
+            if not package_link or package_link[1] != urls[name]:
                 raise SystemExit(f"{filename} 的 OpenWrt {branch} 安装链接与 {name} 不符")
     return urls
 
