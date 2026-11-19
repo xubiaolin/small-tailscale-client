@@ -1,0 +1,26 @@
+#!/bin/sh
+set -eu
+exec 1>&2
+umask 077
+share=/usr/share/small-tailscale
+conf=/etc/tailscale
+case "$("$share/source")" in none|project) ;; *) exit 1 ;; esac
+stage=$(mktemp -d /etc/.small-tailscale.XXXXXX)
+trap 'rm -rf "$stage"' EXIT
+for src in "$share"/scripts/*.sh; do
+	name=${src##*/}
+	if [ ! -L "$conf/$name" ] && [ -x "$conf/$name" ] && cmp -s "$src" "$conf/$name"; then continue; fi
+	cp "$src" "$stage/$name"
+	chmod 755 "$stage/$name"
+done
+if [ ! -d "$conf" ]; then
+	mv "$stage" "$conf"
+else
+	for file in "$stage"/*.sh; do
+		[ -f "$file" ] || break
+		mv -f "$file" "$conf/${file##*/}"
+	done
+fi
+if [ ! -L /usr/bin/tailscale-helper ]; then ln -s "$conf/helper.sh" /usr/bin/tailscale-helper; fi
+# 老服务按旧脚本启动时不会检查锁定版本。仅更新定义，保留运行中的连接。
+if [ -f /etc/init.d/tailscale ]; then "$conf/setup_service.sh" --refresh; fi
