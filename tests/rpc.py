@@ -209,8 +209,10 @@ class RpcTest(unittest.TestCase):
             if subprocess.run(ubus + ["list", "small-tailscale"], capture_output=True).stdout.strip():
                 break
             time.sleep(0.02)
+        previous = self.call("config")
+        del previous["options"]
         request = dict(mode="local", auto_update=False, pinned_version="",
-                       mirror="https://github.com", params={"hostname": "my-router"})
+                       mirror="https://github.com", params={"hostname": "my-router"}, previous=previous)
         reply = subprocess.check_output(ubus + ["call", "small-tailscale", "save", json.dumps(request)])
         self.assertEqual(json.loads(reply), {"ok": True})
         self.assertEqual(self.call("config")["params"], {"hostname": "my-router"})
