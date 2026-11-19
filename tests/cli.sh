@@ -79,8 +79,9 @@ rm /tmp/tailscaled
 grep -qx 'v1.92.0' current_version
 ./update_ctl.sh off >/dev/null
 ./update_ctl.sh --version=v1.89.0 >/dev/null
-./autoupdate.sh --manual >/dev/null
+./autoupdate.sh --on-start >/dev/null
 [ "$(cat /tmp/tailscaled)" = v1.89.0 ]
+./autoupdate.sh --manual >/dev/null
 cp install.conf /tmp/config-before
 cat >/etc/init.d/tailscale <<'MOCK'
 #!/bin/sh
@@ -113,6 +114,26 @@ rm /tmp/service-actions
 ./setup_service.sh --refresh >/dev/null
 [ ! -e /tmp/service-actions ] || { echo '刷新脚本时操作了正在运行的服务' >&2; exit 1; }
 
+# 网页保存待安装模式。下载失败后，启动仍选择 local；下一次成功下载才切换为 tmp。
+echo REQUESTED_MODE=tmp >> install.conf
+./github_direct_ctl.sh https://offline.example >/dev/null
+if ./setup.sh --saved >/dev/null; then exit 1; fi
+(
+    . /etc/init.d/tailscale
+    procd_open_instance() { :; }
+    procd_close_instance() { :; }
+    procd_set_param() { if [ "$1" = command ]; then echo "$2" > /tmp/boot-binary; fi; }
+    start_service
+) >/dev/null
+grep -qx /usr/local/bin/tailscaled /tmp/boot-binary
+grep -qx v1.95.0 /usr/local/bin/tailscaled
+[ "$(readlink /usr/bin/tailscale)" = /usr/local/bin/tailscaled ]
+./github_direct_ctl.sh https://mirror.example/github >/dev/null
+./setup.sh --saved >/dev/null
+grep -qx MODE=tmp install.conf
+[ "$(readlink /usr/bin/tailscale)" = /tmp/tailscaled ]
+grep -qx v1.95.0 /tmp/tailscaled
+
 # 从旧节点的菜单直接登录、启动和手动更新。
 printf '#!/bin/sh\nprintf "%%s\\n" "$@" >>/tmp/menu-arguments\n' >/usr/local/bin/tailscale
 chmod +x /usr/local/bin/tailscale
@@ -127,3 +148,10 @@ mv /tmp/scripts /etc/tailscale
 # 生成可粘贴的命令；它必须与 --run 传递相同的参数。
 preview=$(printf 'g\nn\n0\n' | ./tailscale_up_generator.sh)
 printf '%s\n' "$preview" | grep -q "tailscale up '--accept-dns=false' '--hostname=test node \*'"
+
+printf '%s\n' '--auth-key="fixture-secret"' >>tailscale_up.conf
+preview=$(printf 'g\nn\n0\n' | ./tailscale_up_generator.sh)
+printf '%s\n' "$preview" | grep -Fq -- '--auth-key=••••'
+if printf '%s\n' "$preview" | grep -Fq fixture-secret; then exit 1; fi
+./tailscale_up_generator.sh --run
+grep -qxF -- '--auth-key=fixture-secret' /tmp/menu-arguments

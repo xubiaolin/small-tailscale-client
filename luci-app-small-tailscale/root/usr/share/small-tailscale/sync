@@ -4,11 +4,14 @@ exec 1>&2
 umask 077
 share=/usr/share/small-tailscale
 conf=/etc/tailscale
-case "$("$share/source")" in none|project) ;; *) exit 1 ;; esac
+source=$("$share/source")
+if [ "${1:-}" = --existing ] && [ "$source" != project ]; then exit 0; fi
+case "$source" in none|project) ;; *) exit 1 ;; esac
 stage=$(mktemp -d /etc/.small-tailscale.XXXXXX)
 trap 'rm -rf "$stage"' EXIT
 for src in "$share"/scripts/*.sh; do
 	name=${src##*/}
+	[ ! -d "$conf/$name" ] || exit 1
 	if [ ! -L "$conf/$name" ] && [ -x "$conf/$name" ] && cmp -s "$src" "$conf/$name"; then continue; fi
 	cp "$src" "$stage/$name"
 	chmod 755 "$stage/$name"

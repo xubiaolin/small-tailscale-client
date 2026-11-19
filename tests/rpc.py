@@ -53,12 +53,63 @@ class RpcTest(unittest.TestCase):
 
     def project_node(self):
         self.write("etc/tailscale/tools.sh", "# old tools")
-        self.write("etc/tailscale/helper.sh", "# old helper")
+        self.write("etc/tailscale/helper.sh", (REPO / "scripts/helper.sh").read_text() + "\n# old helper\n")
         self.write("etc/tailscale/install.conf", "MODE=local\nVERSION=v1.0.0\nAUTO_UPDATE=true\n")
         self.write("etc/config/tailscaled.state", "existing identity")
         self.write("usr/local/bin/tailscaled",
                    '#!/bin/sh\ncase "$1" in version) echo 1.2.3 ;; status) cat /tmp/node.json ;; esac\n', True)
         (self.root / "usr/bin/tailscale").symlink_to("/usr/local/bin/tailscaled")
+
+    def run_postinst(self):
+        self.write("tmp/postinst", (REPO / "luci-app-small-tailscale/postinst").read_text(), True)
+        self.write("etc/init.d/rpcd", "#!/bin/sh\nexit 0\n", True)
+        subprocess.run(["chroot", self.root, "/tmp/postinst"], check=True, timeout=5)
+
+    def test_plugin_install_refreshes_old_project_before_first_rpc(self):
+        self.project_node()
+        self.write("etc/init.d/tailscale", "#!/bin/sh\n# /etc/tailscale/tools.sh\n", True)
+        self.write("etc/rc.common", 'echo "$2" > /tmp/tailscale-action\n')
+        conf = self.root / "etc/tailscale/install.conf"
+        before = conf.read_bytes()
+        self.run_postinst()
+        self.assertEqual((self.root / "etc/tailscale/helper.sh").read_bytes(), (REPO / "scripts/helper.sh").read_bytes())
+        self.assertIn("--on-start", (self.root / "etc/init.d/tailscale").read_text())
+        self.assertEqual((self.root / "etc/config/tailscaled.state").read_text(), "existing identity")
+        self.assertEqual(conf.read_bytes(), before)
+        self.assertFalse((self.root / "tmp/tailscale-action").exists())
+
+    def test_postinst_does_not_adopt_fresh_router_or_other_scripts(self):
+        self.run_postinst()
+        self.assertFalse((self.root / "etc/tailscale").exists())
+        self.write("etc/tailscale/helper.sh", "# unrelated helper")
+        self.write("etc/tailscale/tools.sh", "# unrelated tools")
+        self.run_postinst()
+        self.assertEqual((self.root / "etc/tailscale/tools.sh").read_text(), "# unrelated tools")
+        self.assertFalse((self.root / "etc/tailscale/setup.sh").exists())
+
+    def test_postinst_preserves_official_apk_during_transaction(self):
+        self.project_node()
+        self.write("usr/bin/apk", "#!/bin/sh\ntouch /tmp/nested-apk\nexit 1\n", True)
+        self.write("lib/apk/db/installed", "P:tailscale\nV:1.0\n")
+        self.run_postinst()
+        self.assertFalse((self.root / "tmp/nested-apk").exists())
+        self.assertEqual((self.root / "etc/tailscale/tools.sh").read_text(), "# old tools")
+
+    def test_stale_browser_cannot_overwrite_cli_settings(self):
+        self.project_node()
+        previous = self.call("config")
+        del previous["options"]
+        request = dict(previous, mode="tmp")
+        self.write("etc/tailscale/github-download.env", "GITHUB_DOWNLOAD_BASE_URL=https://new.example\n")
+        self.assertIn("error", self.call("save", **request, previous=previous))
+        current = self.call("config")
+        self.assertEqual((current["mirror"], current["mode"]), ("https://new.example", "local"))
+        del current["options"]
+        self.assertEqual(self.call("save", **dict(current, mode="tmp"), previous=current), {"ok": True})
+        install = (self.root / "etc/tailscale/install.conf").read_text().splitlines()
+        self.assertIn("MODE=local", install)
+        self.assertIn("REQUESTED_MODE=tmp", install)
+        self.assertEqual(self.call("config")["mode"], "tmp")
 
     def test_old_node_shows_running_version_and_tracks_authorization(self):
         self.project_node()
@@ -158,8 +209,10 @@ class RpcTest(unittest.TestCase):
             if subprocess.run(ubus + ["list", "small-tailscale"], capture_output=True).stdout.strip():
                 break
             time.sleep(0.02)
+        previous = self.call("config")
+        del previous["options"]
         request = dict(mode="local", auto_update=False, pinned_version="",
-                       mirror="https://github.com", params={"hostname": "my-router"})
+                       mirror="https://github.com", params={"hostname": "my-router"}, previous=previous)
         reply = subprocess.check_output(ubus + ["call", "small-tailscale", "save", json.dumps(request)])
         self.assertEqual(json.loads(reply), {"ok": True})
         self.assertEqual(self.call("config")["params"], {"hostname": "my-router"})

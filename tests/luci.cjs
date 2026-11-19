@@ -13,7 +13,7 @@ const root = path.join(__dirname, '..');
 const resources = path.join(root, 'luci-app-small-tailscale/htdocs/luci-static/resources/view/small-tailscale');
 const options = execFileSync('sh', [path.join(root, 'scripts/tailscale_up_generator.sh'), '--list'], { encoding: 'utf8' })
 	.trim().split('\n').map(line => {
-		const [, key, type, description] = line.match(/^--([\w-]+):(flag|value):(.+)$/);
+		const [, key, type, description] = line.match(/^--([\w-]+):(flag|value|secret):(.+)$/);
 		return { key, type, description };
 	});
 let browser;
@@ -49,7 +49,7 @@ async function openView(t, name, replies = {}, writable = true) {
 		const rpc = { declare(spec) {
 			return async (...args) => {
 				const data = Object.fromEntries((spec.params || []).map((p, i) => [p, args[i]]));
-				window.calls.push({ object: spec.object, method: spec.method, data });
+				window.calls.push({ object: spec.object, method: spec.method, data: structuredClone(data) });
 				const reply = window.replies[spec.method];
 				return spec.method === 'logs' ? reply[data.kind] : (reply || { ok: true });
 			};
@@ -83,7 +83,7 @@ test('项目节点保留实际版本，从待授权轮询至已连接，并显�
 	});
 	assert.ok(await page.getByText('v1.92.3', { exact: true }).count());
 	await page.getByRole('button', { name: '启动并连接' }).click();
-	assert.deepEqual(await page.evaluate(() => window.calls.filter(x => ['install', 'start'].includes(x.method)).map(x => x.method)), ['start']);
+	assert.deepEqual(await page.evaluate(() => window.calls.filter(x => ['install', 'start', 'save'].includes(x.method)).map(x => x.method)), ['start']);
 	await page.evaluate(async () => {
 		Object.assign(window.replies.status, { busy: true, state: 'NeedsLogin', auth_url: 'https://login.example.test/a' });
 		await window.refresh();
@@ -97,6 +97,19 @@ test('项目节点保留实际版本，从待授权轮询至已连接，并显�
 	assert.equal(await page.getByRole('link', { name: '打开授权页面' }).count(), 0);
 	assert.ok(await page.getByText('100.101.102.103', { exact: true }).isVisible());
 	assert.ok(await page.getByText('已连接', { exact: true }).isVisible());
+});
+
+test('网页未修改时直接使用设备的最新设置，旧页面提交冲突后保留输入', async t => {
+	const page = await openView(t, 'manage', { save: { error: '设置已由其他入口修改，请刷新页面后重新保存。' } });
+	await page.evaluate(() => { window.replies.config = { ...window.replies.config, mirror: 'https://cli.example' }; });
+	await page.getByRole('button', { name: '下载安装', exact: true }).click();
+	assert.deepEqual(await page.evaluate(() => window.calls.filter(x => ['save', 'install'].includes(x.method)).map(x => x.method)), ['install']);
+	await page.getByLabel('主机名', { exact: true }).fill('updated');
+	await page.getByRole('button', { name: '下载安装', exact: true }).click();
+	assert.ok(await page.getByText(/设置已由其他入口修改/).isVisible());
+	assert.equal(await page.getByLabel('主机名', { exact: true }).inputValue(), 'updated');
+	assert.deepEqual(await page.evaluate(() => window.calls.filter(x => ['save', 'install'].includes(x.method)).map(x => x.method)), ['install', 'save']);
+	assert.equal(await page.evaluate(() => window.calls.find(x => x.method === 'save').data.previous.mirror), 'https://github.com');
 });
 
 test('外部安装只显示来源和原渠道管理指引，所有写操作均不可用', async t => {

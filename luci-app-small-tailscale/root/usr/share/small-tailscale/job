@@ -26,11 +26,7 @@ case "$("$share/source")" in none|project) ;; *) echo '检测到外部安装，�
 
 case "$action" in
 	install)
-		mode=$(sed -n 's/^MODE=//p' "$conf/install.conf" 2>/dev/null | tail -n 1)
-		auto=$(sed -n 's/^AUTO_UPDATE=//p' "$conf/install.conf" 2>/dev/null | tail -n 1)
-		case "$mode" in tmp) set -- --tmp ;; *) set -- --local ;; esac
-		if [ "$auto" = true ]; then set -- "$@" --auto-update; else set -- "$@" --no-auto-update; fi
-		exec "$conf/setup.sh" "$@" ;;
+		exec "$conf/setup.sh" --saved ;;
 	start)
 		if ! /etc/init.d/tailscale running; then /etc/init.d/tailscale start; fi
 		# procd 异步拉起守护进程，等待本地 API 可响应（待授权也会输出 JSON）。

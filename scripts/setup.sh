@@ -10,6 +10,7 @@ requested_version=""
 while [ "$#" -gt 0 ]; do
     has_args=true
     case "$1" in
+        --saved) ;;  # 使用现有配置进行非交互安装
         --local) requested_mode=local ;;
         --tmp) requested_mode=tmp ;;
         --auto-update) requested_update=true ;;
@@ -28,38 +29,42 @@ done
 
 # 若无参数，进入交互模式
 if [ "$has_args" = false ]; then
+    safe_source "$INST_CONF"
+    default_mode=${REQUESTED_MODE:-${MODE:-local}}
     log_info
     log_info "📮  请选择安装 Tailscale 模式："
-    log_info "     1/y/Y/直接回车). 本地安装  🏠"
+    log_info "     1/y/Y        ). 本地安装  🏠"
     log_info "     2/n/N        ). 内存安装  💻"
     log_info "     0/e/E/其他字符). 退出安装  ⛔"
-    log_info "⏳  请输入选项: " 1
+    log_info "⏳  请输入选项（回车沿用 $default_mode）: " 1
     read mode_input
 
     case "$mode_input" in
-        1|"y"|"Y"|"") requested_mode="local" ;;
+        1|"y"|"Y") requested_mode="local" ;;
         2|"n"|"N") requested_mode="tmp" ;;
+        "") requested_mode=$default_mode ;;
         *) log_error "❌  已取消安装"; exit 1 ;;
     esac
 
     log_info
     log_info "🔄  是否启用 Tailscale 自动更新？"
-    log_info "     1/y/Y/直接回车). 启用更新  ✅"
+    log_info "     1/y/Y        ). 启用更新  ✅"
     log_info "     2/n/N        ). 禁用更新  ❌"
     log_info "     0/e/E/其他字符). 退出安装  ⛔"
-    log_info "⏳  请输入选项: " 1
+    log_info "⏳  请输入选项（回车沿用 ${AUTO_UPDATE:-true}）: " 1
     read update_input
 
     case "$update_input" in
-        1|"y"|"Y"|"") requested_update=true ;;
+        1|"y"|"Y") requested_update=true ;;
         2|"n"|"N") requested_update=false ;;
+        "") requested_update=${AUTO_UPDATE:-true} ;;
         *) log_error "⛔  已取消安装"; exit 1 ;;
     esac
 fi
 
 lock_config
 safe_source "$INST_CONF"
-MODE=${requested_mode:-${MODE:-local}}
+MODE=${requested_mode:-${REQUESTED_MODE:-${MODE:-local}}}
 AUTO_UPDATE=${requested_update:-${AUTO_UPDATE:-false}}
 case "$MODE" in local|tmp) ;; *) log_error "无效的安装模式：$MODE"; exit 1 ;; esac
 case "$AUTO_UPDATE" in true|false) ;; *) log_error "无效的自动更新设置"; exit 1 ;; esac

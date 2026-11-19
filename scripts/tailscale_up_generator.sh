@@ -8,14 +8,14 @@ PARAMS_LIST="--accept-dns:flag:接受来自管理面板的 DNS 配置（默认 t
 --advertise-exit-node:flag:提供此节点作为出口节点以转发互联网流量（默认 false）
 --advertise-routes:value:向其他节点通告的路由（逗号分隔，例如 10.0.0.0/8,192.168.0.0/24），空字符串表示不通告
 --advertise-tags:value:请求的 ACL 标签（逗号分隔），每个必须以 tag: 开头
---auth-key:value:节点授权密钥；如果以 file: 开头则为包含密钥的文件路径
+--auth-key:secret:节点授权密钥；如果以 file: 开头则为包含密钥的文件路径
 --client-id:value:用于通过工作负载身份联合生成授权密钥的 Client ID
---client-secret:value:用于通过 OAuth 生成授权密钥的 Client Secret；以 file: 开头则为包含密钥的文件路径
+--client-secret:secret:用于通过 OAuth 生成授权密钥的 Client Secret；以 file: 开头则为包含密钥的文件路径
 --exit-node:value:Tailscale 出口节点（IP、基本名称或 auto:any），空字符串表示不使用出口节点
 --exit-node-allow-lan-access:flag:通过出口节点路由时允许直接访问本地局域网（默认 false）
 --force-reauth:flag:强制重新认证（警告：会断开 Tailscale 连接，不应在 SSH 或 RDP 远程执行）（默认 false）
 --hostname:value:使用此主机名而不是操作系统提供的名称
---id-token:value:从身份提供商获取的 ID token，用于与控制服务器交换以进行工作负载身份联合；以 file: 开头则为文件路径
+--id-token:secret:从身份提供商获取的 ID token，用于与控制服务器交换以进行工作负载身份联合；以 file: 开头则为文件路径
 --json:flag:以 JSON 格式输出（警告：格式可能变更）（默认 false）
 --login-server:value:控制服务器的基础 URL（默认 https://controlplane.tailscale.com）
 --netfilter-mode:value:netfilter 模式（on、nodivert、off 之一）（默认 on）
@@ -31,18 +31,21 @@ PARAMS_LIST="--accept-dns:flag:接受来自管理面板的 DNS 配置（默认 t
 
 # 历史格式每行 --key="value"。引号内的内容始终按字面值传递。
 run_up() {
-    local action=$1 arg
+    local action=$1 arg entry
+    local entries="
+$PARAMS_LIST"
     set -- up
     if [ -f "$CONF_FILE" ]; then
         while IFS= read -r line || [ -n "$line" ]; do
             case "$line" in --*=*) ;; *) continue ;; esac
             key=${line%%=*}
             case "$key" in *[!a-z-]*) continue ;; esac
-            case "
-$PARAMS_LIST" in *"
-$key:"*) ;; *) continue ;; esac
+            entry=${entries#*"
+$key:"}
+            [ "$entry" != "$entries" ] || continue
             value=${line#*=}
             case "$value" in \"*\") value=${value#\"}; value=${value%\"} ;; esac
+            if [ "$action" = preview ] && [ "${entry%%:*}" = secret ]; then value='••••'; fi
             set -- "$@" "$key=$value"
         done < "$CONF_FILE"
     fi
@@ -54,7 +57,6 @@ $key:"*) ;; *) continue ;; esac
     printf 'tailscale up'
     shift
     for arg do
-        case "$arg" in --auth-key=*|--client-secret=*|--id-token=*) arg="${arg%%=*}=••••" ;; esac
         printf " '"
         # 将单引号编码为 shell 命令行中的 '\\''。
         while [ "${arg#*\'}" != "$arg" ]; do
@@ -101,7 +103,7 @@ show_menu() {
     while IFS=: read -r key type description; do
         number=$((number + 1))
         value=$(get_value "$key")
-        case "$key" in --auth-key|--client-secret|--id-token) [ -z "$value" ] || value='••••' ;; esac
+        if [ "$type" = secret ] && [ -n "$value" ]; then value='••••'; fi
         printf '%2d) %s = [%s]  %s\n' "$number" "$key" "${value:-默认}" "$description"
     done <<EOF
 $PARAMS_LIST

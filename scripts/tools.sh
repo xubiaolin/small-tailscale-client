@@ -97,7 +97,7 @@ safe_source() {
         case "$line" in *=*) ;; *) continue ;; esac
         key=${line%%=*}
         case "$key" in
-            MODE|AUTO_UPDATE|VERSION|PINNED_VERSION|ARCH|HOST_NAME|TIMESTAMP|\
+            MODE|REQUESTED_MODE|AUTO_UPDATE|VERSION|PINNED_VERSION|ARCH|HOST_NAME|TIMESTAMP|\
             NOTIFY_UPDATE|NOTIFY_MIRROR_FAIL|NOTIFY_EMERGENCY|NOTIFY_SERVERCHAN|SERVERCHAN_KEY|\
             NOTIFY_BARK|BARK_KEY|NOTIFY_NTFY|NTFY_KEY|NOTIFY_PUSHPLUS|PUSHPLUS_TOKEN) ;;
             *) continue ;;
