@@ -1,11 +1,6 @@
 #!/bin/sh
 
-[ -f /etc/tailscale/tools.sh ] && . /etc/tailscale/tools.sh
-CONFIG_DIR="/etc/tailscale"
-CONF_FILE="$CONFIG_DIR/tailscale_up.conf"
-TMP_PARAMS="/tmp/params_list.$$"
-trap 'rm -f "$TMP_PARAMS"' EXIT
-
+CONF_FILE="/etc/tailscale/tailscale_up.conf"
 PARAMS_LIST="--accept-dns:flag:接受来自管理面板的 DNS 配置（默认 true）
 --accept-risk:value:接受风险类型并跳过确认（lose-ssh、mac-app-connector、linux-strict-rp-filter、all）
 --accept-routes:flag:接受其他 Tailscale 节点通告的路由（默认 false）
@@ -34,171 +29,111 @@ PARAMS_LIST="--accept-dns:flag:接受来自管理面板的 DNS 配置（默认 t
 --stateful-filtering:flag:对转发的数据包应用有状态过滤（子网路由器、出口节点等）（默认 false）
 --timeout:value:等待 tailscaled 进入 Running 状态的最长时间；默认 0s 表示永远等待"
 
-# 获取参数类型
-get_param_type() {
-  echo "$PARAMS_LIST" | grep "^$1:" | cut -d':' -f2
+# 历史格式每行 --key="value"。引号内的内容始终按字面值传递。
+run_up() {
+    local action=$1 arg
+    set -- up
+    if [ -f "$CONF_FILE" ]; then
+        while IFS= read -r line || [ -n "$line" ]; do
+            case "$line" in --*=*) ;; *) continue ;; esac
+            key=${line%%=*}
+            case "$key" in *[!a-z-]*) continue ;; esac
+            case "
+$PARAMS_LIST" in *"
+$key:"*) ;; *) continue ;; esac
+            value=${line#*=}
+            case "$value" in \"*\") value=${value#\"}; value=${value%\"} ;; esac
+            set -- "$@" "$key=$value"
+        done < "$CONF_FILE"
+    fi
+    if [ "$action" = run ]; then
+        tailscale "$@"
+        return $?
+    fi
+
+    printf 'tailscale up'
+    shift
+    for arg do
+        case "$arg" in --auth-key=*|--client-secret=*|--id-token=*) arg="${arg%%=*}=••••" ;; esac
+        printf " '"
+        # 将单引号编码为 shell 命令行中的 '\\''。
+        while [ "${arg#*\'}" != "$arg" ]; do
+            printf '%s%s' "${arg%%\'*}" "'\\''"
+            arg=${arg#*\'}
+        done
+        printf "%s'" "$arg"
+    done
+    printf '\n'
 }
 
-# 获取参数描述
-get_param_desc() {
-  echo "$PARAMS_LIST" | grep "^$1:" | cut -d':' -f3-
+get_value() {
+    [ -f "$CONF_FILE" ] || return 0
+    awk -v key="$1" 'index($0, key "=") == 1 {
+        value=substr($0, length(key)+2)
+        if (value ~ /^".*"$/) value=substr(value, 2, length(value)-2)
+    } END { print value }' "$CONF_FILE"
 }
 
-# 加载配置文件
-load_conf() {
-  [ -f "$CONF_FILE" ] || return
-  while IFS='=' read -r key value; do
-    [ -z "$key" ] && continue
-    case "$key" in \#*) continue ;; esac
-    key=$(echo "$key" | tr '-' '_' | tr '[:lower:]' '[:upper:]')
-    value=$(echo "$value" | sed 's/^"\(.*\)"$/\1/')
-    eval "$key=\"$value\""
-    log_info "加载配置: $key=$value"
-  done < "$CONF_FILE"
-}
-
-# 保存配置到文件
-save_conf() {
-  echo -n > "$CONF_FILE"
-  echo "$PARAMS_LIST" | while IFS= read -r line; do
-    key=$(echo "$line" | cut -d':' -f1)
-    var_name=$(echo "$key" | tr '-' '_' | tr '[:lower:]' '[:upper:]')
-    eval val=\$$var_name
-    [ -n "$val" ] && echo "$key=\"$val\"" >> "$CONF_FILE"
-  done
-}
-
-# 显示当前参数状态
-show_status() {
-  clear
-  log_info "当前 tailscale up 参数状态："
-  max_key_len=0
-  max_val_len=0
-  i=1
-  OPTIONS=""
-  echo "$PARAMS_LIST" > "$TMP_PARAMS"
-  while IFS= read -r line; do
-    [ -z "$line" ] && continue
-    key=$(echo "$line" | cut -d':' -f1)
-    type=$(echo "$line" | cut -d':' -f2)
-    desc=$(echo "$line" | cut -d':' -f3-)
-    var_name=$(echo "$key" | tr '-' '_' | tr '[:lower:]' '[:upper:]')
-    eval val=\$$var_name
-    [ "${#key}" -gt "$max_key_len" ] && max_key_len=${#key}
-    [ "${#val}" -gt "$max_val_len" ] && max_val_len=${#val}
-    OPTIONS="${OPTIONS}
-$i|$key"
-    
-    emoji="⭕"
-    status_text="[默认]"
-    if [ "$type" = "flag" ]; then
-      if [ "$val" = "true" ]; then
-        emoji="✅"
-        status_text="[启用]"
-      elif [ "$val" = "false" ]; then
-        emoji="❌"
-        status_text="[禁用]"
-      fi
+edit_param() (
+    local key=$1 type=$2 value tmp
+    if [ "$type" = flag ]; then
+        lock_config || return 1
+        value=$(get_value "$key")
+        case "$value" in true) value=false ;; false) value="" ;; *) value=true ;; esac
     else
-      [ -n "$val" ] && emoji="✅" && status_text="[$val]"
+        printf '%s 的新值（直接回车清除）：' "$key"
+        IFS= read -r value || return 1
+        lock_config || return 1
     fi
 
-    log_info "$(printf "%2d) %s %-${max_key_len}s = %-10s # %s" \
-      "$i" "$emoji" "$key" "$status_text" "$desc")"
-    i=$((i + 1))
-  done < "$TMP_PARAMS"
-  log_info "⏳  0) 退出   g) 生成带参数的 tailscale up 命令"
-  log_info "⏳  输入编号后回车即可修改: " 1
-}
-
-# 编辑指定参数
-edit_param() {
-  idx=$1
-  key=$(echo "$OPTIONS" | grep "^$idx|" | cut -d'|' -f2)
-  [ -z "$key" ] && return
-  type=$(get_param_type "$key")
-  desc=$(get_param_desc "$key")
-  var_name=$(echo "$key" | tr '-' '_' | tr '[:lower:]' '[:upper:]')
-  eval val=\$$var_name
-
-  if [ "$type" = "flag" ]; then
-    if [ -z "$val" ]; then
-      eval "$var_name=true"
-      log_info "✅  设置 $key 为 true"
-    elif [ "$val" = "true" ]; then
-      eval "$var_name=false"
-      log_info "❌  设置 $key 为 false"
-    else
-      unset $var_name
-      log_info "⚪  重置 $key 为默认值"
+    tmp=$(mktemp "$CONF_FILE.XXXXXX") || return 1
+    if [ -f "$CONF_FILE" ]; then
+        awk -v key="$key" 'index($0,key "=") != 1' "$CONF_FILE" > "$tmp" || { rm -f "$tmp"; return 1; }
     fi
-  else
-    if [ -z "$val" ]; then
-      log_info "🔑  请输入 $key 的值（$desc）：" 1
-      read val
-      [ -n "$val" ] && eval "$var_name=\"$val\"" && log_info "✅  保存了 $key 的值：$val"
-    else
-      log_info "🔄  当前 $key 的值为 $val，直接回车则清除，输入其他值则更新：" 1
-      read newval
-      if [ -n "$newval" ]; then
-        eval "$var_name=\"$newval\""
-        log_info "✅  更新了 $key 的值：$newval"
-      else
-        unset $var_name
-        log_info "❌  删除了 $key 的值"
-      fi
+    if [ -n "$value" ]; then
+        printf '%s="%s"\n' "$key" "$value" >> "$tmp" || { rm -f "$tmp"; return 1; }
     fi
-  fi
-  save_conf
-  sleep 1
+    mv "$tmp" "$CONF_FILE"
+)
+
+show_menu() {
+    local number=0 key type description value
+    while IFS=: read -r key type description; do
+        number=$((number + 1))
+        value=$(get_value "$key")
+        case "$key" in --auth-key|--client-secret|--id-token) [ -z "$value" ] || value='••••' ;; esac
+        printf '%2d) %s = [%s]  %s\n' "$number" "$key" "${value:-默认}" "$description"
+    done <<EOF
+$PARAMS_LIST
+EOF
+    printf '0) 退出   g) 预览并执行 tailscale up   输入编号修改参数：'
 }
 
-# 生成带参数的 tailscale up 命令
-generate_cmd() {
-  cmd="tailscale up"
-  temp_file=$(mktemp)
-  echo "$PARAMS_LIST" > "$temp_file"
+case "${1:-}" in
+    --list) printf '%s\n' "$PARAMS_LIST"; exit 0 ;;
+    --run) run_up run; exit $? ;;
+    '') . /etc/tailscale/tools.sh ;;
+    *) exit 1 ;;
+esac
 
-  while IFS= read -r line; do
-    key=$(echo "$line" | cut -d':' -f1)
-    type=$(echo "$line" | cut -d':' -f2)
-    var_name=$(echo "$key" | tr '-' '_' | tr '[:lower:]' '[:upper:]')
-    eval val=\$$var_name
-    [ -z "$val" ] && continue
-
-    cmd="$cmd $key=$val"
-    log_info "正在拼接命令: $key=$val"
-  done < "$temp_file"
-
-  rm -f "$temp_file"
-
-  log_info "⏳ 生成命令："
-  log_info "$cmd"
-  log_info "🟢  是否立即执行该命令？[y/N]: " 1
-  read runnow
-  if [ -z "$runnow" ] || [ "$runnow" = "y" ] || [ "$runnow" = "Y" ]; then
-    log_info "🚀  正在执行 tailscale up ..."
-    eval "$cmd"
-    log_info "⏳  请按回车继续..." 1
-    read _
-    exit 0
-  fi
-}
-
-# 主函数
-main() {
-  while true; do
-    load_conf
-    show_status
-    read input
-    if [ "$input" = "0" ]; then
-      exit 0
-    elif [ "$input" = "g" ]; then
-      generate_cmd
-    elif echo "$OPTIONS" | grep -q "^$input|"; then
-      edit_param "$input"
-    fi
-  done
-}
-
-main
+while :; do
+    show_menu
+    IFS= read -r choice || exit 0
+    case "$choice" in
+        0) exit 0 ;;
+        g)
+            run_up preview
+            printf '立即执行？[Y/n] '
+            IFS= read -r answer || exit 0
+            case "$answer" in ''|y|Y) run_up run; exit $? ;; esac
+            ;;
+        ''|*[!0-9]*) ;;
+        *)
+            param=$(printf '%s\n' "$PARAMS_LIST" | sed -n "${choice}p")
+            [ -n "$param" ] || continue
+            key=${param%%:*}
+            rest=${param#*:}
+            edit_param "$key" "${rest%%:*}" || exit 1
+            ;;
+    esac
+done

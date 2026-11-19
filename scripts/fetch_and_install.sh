@@ -3,6 +3,8 @@
 set -e
 
 . /etc/tailscale/tools.sh
+RECORD_INSTALL_LOG=true
+lock_config
 [ ! -s "$INST_CONF" ] || safe_source "$INST_CONF"
 ensure_arch || exit 1
 
@@ -36,7 +38,11 @@ install_tailscale() {
     local mode=$2
 
     local arch="$ARCH"
-    local tailscale_temp_path="/tmp/tailscaled.$$"
+    local bin_dir="/tmp"
+    [ "$mode" != local ] || bin_dir=/usr/local/bin
+    mkdir -p "$bin_dir"
+    tailscale_temp_path=$(mktemp "$bin_dir/.tailscaled.XXXXXX")
+    trap 'rm -f "$tailscale_temp_path"' EXIT
     local release_arch_filename="tailscaled-linux-$arch"
     local release_url="$release_base/download/$version"
 
@@ -65,21 +71,13 @@ install_tailscale() {
     fi
 
     # 安装
-    chmod +x "$tailscale_temp_path"
-    if [ "$mode" = "local" ]; then
-        mkdir -p /usr/local/bin
-        mv "$tailscale_temp_path" /usr/local/bin/tailscaled
-        ln -sf /usr/local/bin/tailscaled /usr/bin/tailscaled
-        ln -sf /usr/local/bin/tailscaled /usr/bin/tailscale
-        log_info "✅  安装到 /usr/local/bin/"
-    else
-        mv "$tailscale_temp_path" /tmp/tailscaled
-        ln -sf /tmp/tailscaled /usr/bin/tailscaled
-        ln -sf /tmp/tailscaled /usr/bin/tailscale
-        log_info "✅  安装到 /tmp (内存模式)"
-    fi
-
-    echo "$version" > "$VERSION_FILE"
+    chmod 755 "$tailscale_temp_path"
+    mv "$tailscale_temp_path" "$bin_dir/tailscaled"
+    ln -sf "$bin_dir/tailscaled" /usr/bin/tailscaled
+    ln -sf "$bin_dir/tailscaled" /usr/bin/tailscale
+    printf '%s\n' "$version" > "$VERSION_FILE.new"
+    mv "$VERSION_FILE.new" "$VERSION_FILE"
+    log_info "已安装 Tailscale $version 到 $bin_dir/"
 }
 
 # 参数解析
@@ -96,6 +94,11 @@ while [ $# -gt 0 ]; do
         *) log_error "未知参数: $1"; exit 1 ;;
     esac
 done
+
+case "$MODE" in local|tmp) ;; *) log_error "无效的安装模式：$MODE"; exit 1 ;; esac
+if [ "$VERSION" != latest ] && ! valid_version "$VERSION"; then
+    log_error "无效的发布版本：$VERSION"; exit 1
+fi
 
 if [ "$VERSION" = "latest" ]; then
     attempt=1
