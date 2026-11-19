@@ -74,7 +74,7 @@ function logs(kind) {
 
 function status() {
 	let source = trim(output(share + '/source')) || 'external';
-	let installed = !!fs.access('/usr/bin/tailscale', 'x');
+	let installed = !!fs.access('/usr/bin/tailscale', 'x') || (source == 'external' && !!fs.access('/usr/sbin/tailscale', 'x'));
 	let node = {}, version = '';
 	if (installed && source == 'project') {
 		version = match(output('/usr/bin/tailscale version 2>/dev/null'), /^v?([0-9]+\.[0-9]+\.[0-9]+[^ \t\r\n]*)/);

@@ -46,7 +46,10 @@ class RpcTest(unittest.TestCase):
         self.write("etc/tailscale/tools.sh", "# old helper\n")
         self.write("etc/init.d/tailscale", "# official init\n")
         self.write("usr/sbin/tailscaled", "official binary")
-        self.assertEqual(self.call("status")["source"], "external")
+        self.write("usr/sbin/tailscale", "#!/bin/sh\ntouch /tmp/ran-official-client\n", True)
+        status = self.call("status")
+        self.assertEqual((status["source"], status["installed"]), ("external", True))
+        self.assertFalse((self.root / "tmp/ran-official-client").exists())
         for name in ("save", "install", "start"):
             self.assertIn("error", self.call(name))
         self.assertEqual((self.root / "etc/init.d/tailscale").read_text(), "# official init\n")
