@@ -1,0 +1,225 @@
+#!/usr/bin/ucode
+'use strict';
+
+import * as fs from 'fs';
+
+const share = '/usr/share/small-tailscale';
+const conf = '/etc/tailscale';
+
+function output(command) {
+	let pipe = fs.popen(command, 'r');
+	if (!pipe) return '';
+	let data = pipe.read('all');
+	pipe.close();
+	return data || '';
+}
+
+function fields(file) {
+	let entries = {};
+	for (let line in split(fs.readfile(conf + '/' + file) || '', '\n')) {
+		let pair = match(line, /^([A-Za-z_][A-Za-z_0-9]*|--[a-z0-9-]+)=(.*)$/);
+		if (pair) entries[pair[1]] = replace(pair[2], /^"(.*)"$/, '$1');
+	}
+	return entries;
+}
+
+function options() {
+	let result = [];
+	for (let line in split(output(share + '/scripts/tailscale_up_generator.sh --list'), '\n')) {
+		let parts = match(line, /^--([a-z0-9-]+):(flag|value|secret):(.+)$/);
+		if (parts) push(result, { key: parts[1], type: parts[2], description: parts[3] });
+	}
+	if (!length(result)) die('无法读取 Tailscale 参数清单');
+	return result;
+}
+
+const masked = '••••';
+
+function configuration(source, opts) {
+	let params = {};
+	let install = {}, mirror = {};
+	if (source == 'project') {
+		install = fields('install.conf');
+		mirror = fields('github-download.env');
+		let saved = fields('tailscale_up.conf');
+		for (let opt in opts) {
+			let value = saved['--' + opt.key];
+			if (value) params[opt.key] = opt.type == 'secret' ? masked : value;
+		}
+	}
+	return {
+		mode: (install.REQUESTED_MODE || install.MODE) == 'tmp' ? 'tmp' : 'local', auto_update: install.AUTO_UPDATE == 'true',
+		pinned_version: install.PINNED_VERSION || '', mirror: mirror.GITHUB_DOWNLOAD_BASE_URL || 'https://github.com',
+		params, options: opts
+	};
+}
+
+const jobLock = '/var/lock/small-tailscale-job.lock';
+function busy() {
+	let file = fs.open(jobLock, 'r');
+	return file && !file.lock('sn') || false;
+}
+
+function logs(kind) {
+	if (kind == 'runtime')
+		return { text: output("logread -e tailscale 2>/dev/null | tail -n 120") +
+			output('tail -n 80 /var/log/tailscale.log 2>/dev/null') +
+			output('tail -n 80 /var/run/small-tailscale/start.log 2>/dev/null') };
+	if (kind == 'install')
+		return { text: output('tail -n 100 /tmp/tailscale_update.log 2>/dev/null') +
+			output('tail -n 120 /var/log/tailscale_install.log 2>/dev/null') +
+			output('tail -n 80 /var/run/small-tailscale/install.log 2>/dev/null') };
+	die('日志类别无效');
+}
+
+function status() {
+	let source = trim(output(share + '/source')) || 'external';
+	let installed = !!fs.access('/usr/bin/tailscale', 'x') || (source == 'external' && !!fs.access('/usr/sbin/tailscale', 'x'));
+	let node = {}, version = '';
+	if (installed && source == 'project') {
+		version = match(output('/usr/bin/tailscale version 2>/dev/null'), /^v?([0-9]+\.[0-9]+\.[0-9]+[^ \t\r\n]*)/);
+		version = version ? 'v' + version[1] : trim(fs.readfile(conf + '/current_version') || '');
+		try { node = json(output('/usr/bin/tailscale status --json 2>/dev/null')) || {}; } catch (_) {}
+	}
+
+	let url = node.AuthURL || '';
+	if (node.BackendState == 'NeedsLogin' && !url) {
+		let result = match(output('tail -n 12 /var/run/small-tailscale/start.log 2>/dev/null'),
+			/(^|\n)[ \t]*(https?:\/\/[^[:space:]]+)[ \t]*(\n|$)/);
+		if (result) url = result[2];
+	}
+
+	return {
+		source, installed, version,
+		state: node.BackendState || 'Stopped',
+		ips: node.TailscaleIPs || [], auth_url: url, busy: busy()
+	};
+}
+
+const methods = {
+	status: {}, config: {}, save: { mode: '', auto_update: false, pinned_version: '', mirror: '', params: {}, previous: {} },
+	install: {}, start: {}, logs: { kind: '' }
+};
+
+// 在同一文件系统预写配置。写满闪存、写入中断或提交失败时保留原有设置。
+function saveFiles(files) {
+	let dir = trim(output('mktemp -d /etc/tailscale/.rpc-XXXXXX'));
+	if (!dir) die('无法创建配置暂存目录');
+	let committed = [], failure;
+	try {
+		for (let name, value in files) {
+			let path = conf + '/' + name, stat = fs.lstat(path);
+			if (stat && stat.type != 'file') die('配置路径不是普通文件：' + name);
+			if (stat) {
+				let old = fs.readfile(path);
+				if (old == null || fs.writefile(dir + '/' + name + '.old', old) !== length(old))
+					die('无法备份配置：' + name);
+			}
+			if (fs.writefile(dir + '/' + name, value) !== length(value) || !fs.chmod(dir + '/' + name, 0600))
+				die('无法写入配置：' + name);
+		}
+		for (let name in files) {
+			if (!fs.rename(dir + '/' + name, conf + '/' + name)) die('无法提交配置：' + name);
+			push(committed, name);
+		}
+	}
+	catch (err) {
+		for (let name in committed) {
+			let old = dir + '/' + name + '.old';
+			if (fs.stat(old)) fs.rename(old, conf + '/' + name);
+			else fs.unlink(conf + '/' + name);
+		}
+		failure = err.message;
+	}
+	{
+		for (let name in files) {
+			fs.unlink(dir + '/' + name);
+			fs.unlink(dir + '/' + name + '.old');
+		}
+		fs.rmdir(dir);
+	}
+	if (failure) die(failure);
+}
+
+// 网页携带上次读取的字段。配置锁内校验，防止提交旧页面时覆盖 CLI 刚保存的选择。
+function sameConfiguration(previous, current) {
+	if (type(previous) != 'object' || type(previous.params) != 'object') return false;
+	for (let field in ['mode', 'auto_update', 'pinned_version', 'mirror'])
+		if (previous[field] !== current[field]) return false;
+	if (length(previous.params) != length(current.params)) return false;
+	for (let key, value in previous.params)
+		if (value !== current.params[key]) return false;
+	return true;
+}
+
+function save(args, source) {
+	let opts = options(), params = args.params, lines = [];
+	if ((args.mode != 'local' && args.mode != 'tmp') || type(args.auto_update) != 'bool' ||
+	    type(args.pinned_version) != 'string' ||
+	    (args.pinned_version != '' && !match(args.pinned_version, /^v[0-9]+\.[0-9]+\.[0-9]+$/)) ||
+	    type(args.mirror) != 'string' || !match(args.mirror, /^https?:\/\/[^[:space:][:cntrl:]]+$/) ||
+	    type(params) != 'object')
+		die('安装模式、版本、镜像地址或参数无效');
+
+	if ('previous' in args && !sameConfiguration(args.previous, configuration(source, opts)))
+		die('设置已由其他入口修改，请刷新页面后重新保存。');
+
+	let known = {};
+	for (let opt in opts) {
+		known[opt.key] = true;
+		if (!(opt.key in params) || params[opt.key] == '') continue;
+		let val = params[opt.key];
+		if (opt.type == 'secret' && val === masked) {
+			val = fields('tailscale_up.conf')['--' + opt.key];
+			if (!val) continue;
+		}
+		if (type(val) != 'string' || match(val, /[[:cntrl:]]/) ||
+		    (opt.type == 'flag' && val != 'true' && val != 'false'))
+			die('参数格式无效：--' + opt.key);
+		push(lines, '--' + opt.key + '="' + val + '"\n');
+	}
+	for (let key in params)
+		if (!(key in known)) die('不支持的参数：' + key);
+	if (system([share + '/sync']) != 0) die('无法接入共享管理脚本');
+
+	let install = fs.readfile(conf + '/install.conf') || '';
+	install = join('\n', filter(split(install, '\n'), line => !match(line, /^(REQUESTED_MODE|AUTO_UPDATE|PINNED_VERSION)=/)));
+	if (length(install) && substr(install, -1) != '\n') install += '\n';
+	saveFiles({
+		'install.conf': install + 'REQUESTED_MODE=' + args.mode + '\nAUTO_UPDATE=' + args.auto_update + '\nPINNED_VERSION=' + args.pinned_version + '\n',
+		'github-download.env': 'GITHUB_DOWNLOAD_BASE_URL=' + replace(args.mirror, /\/$/, '') + '\n',
+		'tailscale_up.conf': join('', lines)
+	});
+	return { ok: true };
+}
+
+function call(method, args) {
+	if (method == 'status') return status();
+	if (method == 'logs') return logs(args.kind);
+	let source = trim(output(share + '/source'));
+	if (method == 'config') return configuration(source, options());
+	if (source != 'project' && source != 'none')
+		die('检测到外部安装或无法确认来源，请先通过原安装方式管理服务。');
+	if (method == 'start' && !fs.access('/etc/init.d/tailscale', 'x')) die('请先安装 Tailscale');
+	if (method == 'install' || method == 'start') {
+		if (system([share + '/job', method]) != 0) die('无法启动任务，其他操作可能正在进行');
+		return { ok: true };
+	}
+	fs.mkdir('/var/lock', 0755);
+	let job = fs.open(jobLock, 'a', 0600);
+	if (!job || !job.lock('xn')) die('安装或授权正在进行，请稍后再保存');
+	let lock = fs.open('/var/lock/small-tailscale-config.lock', 'a', 0600);
+	if (!lock || !lock.lock('xn')) die('其他操作正在进行，请稍后重试');
+	if (method == 'save') return save(args, trim(output(share + '/source')));
+	die('未知操作');
+}
+
+try {
+	if (ARGV[0] == 'list') print(methods);
+	else if (ARGV[0] == 'call' && ARGV[1] in methods)
+		print(call(ARGV[1], json(fs.stdin.read('all'))));
+	else die('未知操作');
+}
+catch (e) {
+	print({ error: e.message });
+}

@@ -1,6 +1,10 @@
 #!/bin/sh
 
 . /etc/tailscale/tools.sh
+RECORD_INSTALL_LOG=true
+reason=${1:-}
+case "$reason" in ''|--manual|--on-start) ;; *) exit 1 ;; esac
+lock_config || exit 1
 safe_source "$INST_CONF"
 
 case "$MODE" in
@@ -8,53 +12,41 @@ case "$MODE" in
     tmp)   binary=/tmp/tailscaled ;;
     *) log_error "❌  未配置有效的安装模式"; exit 1 ;;
 esac
-
-if [ "$AUTO_UPDATE" != "true" ] && [ -x "$binary" ]; then
-    log_info "✅  自动更新已关闭，直接使用已安装的 tailscaled"
+recorded=$(cat "$VERSION_FILE" 2>/dev/null)
+if [ "$reason" != --manual ] && [ "$AUTO_UPDATE" != true ] && [ -x "$binary" ] &&
+   { [ -z "$PINNED_VERSION" ] || [ "$PINNED_VERSION" = "$recorded" ]; }; then
+    log_info "自动更新已关闭，使用当前版本"
     exit 0
 fi
 
-recorded=""
-[ ! -s "$VERSION_FILE" ] || recorded=$(cat "$VERSION_FILE")
-
-if [ "$AUTO_UPDATE" = "true" ]; then
-    if ! version=$("$CONFIG_DIR/fetch_and_install.sh" --dry-run) || [ -z "$version" ]; then
-        log_error "❌  无法查询 Tailscale 最新版本"
-        if should_notify "emergency"; then
-            send_notify "❌  Tailscale 更新失败" "无法查询最新版本，请检查网络连接"
-        fi
-        exit 1
-    fi
-    if [ "$version" = "$recorded" ] && [ -x "$binary" ]; then
-        log_info "✅  已安装最新版 $version"
-        exit 0
-    fi
+if [ -n "$PINNED_VERSION" ]; then
+    version=$PINNED_VERSION
+elif [ "$AUTO_UPDATE" = true ] || [ "$reason" = --manual ]; then
+    version=latest
 else
-    # 自动更新关闭时，补回上次安装的版本。旧记录可能只写了 latest。
-    case "$recorded" in
-        ""|latest) version=${VERSION:-latest} ;;
-        *) version=$recorded ;;
-    esac
+    # 旧节点关闭自动更新时，内存安装应补回最后实际安装的版本。
+    case "$recorded" in ''|latest) version=${VERSION:-latest} ;; *) version=$recorded ;; esac
+fi
+if [ "$version" = latest ]; then
+    version=$("$CONFIG_DIR/fetch_and_install.sh" --dry-run) || {
+        log_error "无法查询 Tailscale 最新版本"
+        if should_notify emergency; then send_notify "Tailscale 更新失败" "无法查询最新版本"; fi
+        exit 1
+    }
+fi
+if [ "$version" = "$recorded" ] && [ -x "$binary" ]; then
+    log_info "已安装目标版本 $version"
+    exit 0
 fi
 
-log_info "📥  正在安装 Tailscale $version ($MODE)..."
+log_info "正在安装 Tailscale $version ($MODE)"
 if ! "$CONFIG_DIR/fetch_and_install.sh" --version="$version" --mode="$MODE"; then
-    log_error "❌  Tailscale $version 安装失败"
-    if should_notify "emergency"; then
-        send_notify "❌  Tailscale 安装失败" "版本 $version 安装失败，请检查日志"
-    fi
+    log_error "Tailscale $version 安装失败"
+    if should_notify emergency; then send_notify "Tailscale 安装失败" "版本 $version 安装失败，请检查日志"; fi
     exit 1
 fi
-
-# fetch_and_install.sh 已记录实际安装的 tag。
-if [ "$AUTO_UPDATE" = "true" ]; then
-    if [ "${1:-}" != "--on-start" ]; then
-        /etc/init.d/tailscale restart || {
-            log_error "❌  重启服务失败，将启动服务"
-            /etc/init.d/tailscale start >/dev/null 2>&1 &
-        }
-    fi
-    if should_notify "update"; then
-        send_notify "✅  Tailscale 已更新" "已安装版本 $version"
-    fi
+unlock_config
+if [ "$reason" != --on-start ] && [ -x /etc/init.d/tailscale ]; then
+    SMALL_TS_SKIP_START_UPDATE=1 /etc/init.d/tailscale restart || { log_error "重启服务失败"; exit 1; }
 fi
+if should_notify update; then send_notify "Tailscale 已更新" "已安装版本 $version"; fi

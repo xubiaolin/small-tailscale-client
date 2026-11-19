@@ -1,0 +1,40 @@
+#!/bin/sh
+set -eu
+umask 077
+share=/usr/share/small-tailscale
+conf=/etc/tailscale
+run=/var/run/small-tailscale
+mkdir -p "$run" /var/lock
+
+case "$1" in
+	install|start)
+		action=$1
+		exec 9>>/var/lock/small-tailscale-job.lock
+		flock -n 9 || exit 1
+		# 后台任务继承锁，关闭 RPC 的标准流，rpcd 可以立即回应。
+		( "$0" worker "$action" 9>&-; exit $? ) </dev/null >"$run/$action.log" 2>&1 &
+		exit 0 ;;
+	worker) action=$2 ;;
+	*) exit 1 ;;
+esac
+
+case "$("$share/source")" in none|project) ;; *) echo '检测到外部安装，已取消操作'; exit 1 ;; esac
+(
+	flock -x 8
+	"$share/sync"
+) 8>>/var/lock/small-tailscale-config.lock
+
+case "$action" in
+	install)
+		exec "$conf/setup.sh" --saved ;;
+	start)
+		if ! /etc/init.d/tailscale running; then /etc/init.d/tailscale start; fi
+		# procd 异步拉起守护进程，等待本地 API 可响应（待授权也会输出 JSON）。
+		tries=0
+		until /usr/bin/tailscale status --json 2>/dev/null | grep -q '"BackendState"'; do
+			tries=$((tries + 1))
+			[ "$tries" -lt 20 ] || { echo 'Tailscale 服务尚未就绪'; exit 1; }
+			sleep 1
+		done
+		exec "$conf/tailscale_up_generator.sh" --run ;;
+esac

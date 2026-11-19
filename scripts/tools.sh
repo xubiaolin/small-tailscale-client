@@ -76,30 +76,57 @@ fi
 GITHUB_DOWNLOAD_BASE_URL=${GITHUB_DOWNLOAD_BASE_URL:-https://github.com}
 GITHUB_DOWNLOAD_BASE_URL=${GITHUB_DOWNLOAD_BASE_URL%/}
 
-# 初始化日志系统
-log_info() {
-    echo -n "[$(date '+%Y-%m-%d %H:%M:%S')] [INFO] $1"
-    [ $# -eq 2 ] || echo
-}
-
-log_warn() {
-    echo -n "[$(date '+%Y-%m-%d %H:%M:%S')] [WARNING] $1"
-    [ $# -eq 2 ] || echo
-}
-
-log_error() {
-    echo -n "[$(date '+%Y-%m-%d %H:%M:%S')] [ERROR] $1"
-    [ $# -eq 2 ] || echo
-}
-
-# 安全加载配置文件
-safe_source() {
-    local file="$1"
-    if [ -f "$file" ] && [ -s "$file" ]; then
-        . "$file"
-    else
-        log_warn "⚠️  配置文件 $file 不存在或为空"
+log_message() {
+    local level=$1 line
+    shift
+    line="[$(date '+%Y-%m-%d %H:%M:%S')] [$level] $1"
+    if [ "${RECORD_INSTALL_LOG:-}" = true ]; then
+        printf '%s\n' "$line" >> "$LOG_FILE"
     fi
+    if [ "$#" -eq 2 ]; then printf '%s' "$line"; else printf '%s\n' "$line"; fi
+}
+log_info() { log_message INFO "$@"; }
+log_warn() { log_message WARNING "$@"; }
+log_error() { log_message ERROR "$@"; }
+
+# 配置文件来自 CLI 和 LuCI，仅解析受支持的字段。
+safe_source() {
+    local file=$1 line key value
+    [ -r "$file" ] || return 0
+    while IFS= read -r line || [ -n "$line" ]; do
+        case "$line" in *=*) ;; *) continue ;; esac
+        key=${line%%=*}
+        case "$key" in
+            MODE|REQUESTED_MODE|AUTO_UPDATE|VERSION|PINNED_VERSION|ARCH|HOST_NAME|TIMESTAMP|\
+            NOTIFY_UPDATE|NOTIFY_MIRROR_FAIL|NOTIFY_EMERGENCY|NOTIFY_SERVERCHAN|SERVERCHAN_KEY|\
+            NOTIFY_BARK|BARK_KEY|NOTIFY_NTFY|NTFY_KEY|NOTIFY_PUSHPLUS|PUSHPLUS_TOKEN) ;;
+            *) continue ;;
+        esac
+        value=${line#*=}
+        case "$value" in \"*\") value=${value#\"}; value=${value%\"} ;; esac
+        IFS= read -r "$key" <<EOF
+$value
+EOF
+    done < "$file"
+}
+
+# setup、更新任务和 LuCI 使用同一个文件锁。子脚本继承描述符 9。
+lock_config() {
+    [ "${SMALL_TS_CONFIG_LOCKED:-}" != 1 ] || return 0
+    mkdir -p /var/lock || return 1
+    exec 9>>/var/lock/small-tailscale-config.lock
+    flock -x 9 || return 1
+    export SMALL_TS_CONFIG_LOCKED=1
+}
+
+unlock_config() {
+    unset SMALL_TS_CONFIG_LOCKED
+    exec 9>&-
+}
+
+valid_version() {
+    case "$1" in ''|*[!v0-9.]*) return 1 ;; esac
+    printf '%s\n' "$1" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+$'
 }
 
 webget() {
@@ -169,8 +196,8 @@ verify_checksum() {
         elif command -v openssl >/dev/null 2>&1; then
             actual=$(openssl dgst -sha256 "$file" | awk '{print $2}')
         else
-            log_warn "⚠️  缺少 sha256sum 或 openssl，跳过校验"
-            return 0
+            log_error "缺少 SHA256 校验工具"
+            return 1
         fi
     elif [ ${#expected} -eq 32 ]; then
         if command -v md5sum >/dev/null 2>&1; then
@@ -178,12 +205,12 @@ verify_checksum() {
         elif command -v openssl >/dev/null 2>&1; then
             actual=$(openssl dgst -md5 "$file" | awk '{print $2}')
         else
-            log_warn "⚠️  缺少 md5sum 或 openssl，跳过校验"
-            return 0
+            log_error "缺少 MD5 校验工具"
+            return 1
         fi
     else
-        log_warn "⚠️  未知校验长度 (${#expected})，跳过校验"
-        return 0
+        log_error "未知的校验值格式"
+        return 1
     fi
 
     if [ "$expected" = "$actual" ]; then
