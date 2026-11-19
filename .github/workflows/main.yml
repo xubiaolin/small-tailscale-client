@@ -21,7 +21,7 @@ env:
 
 jobs:
   prepare_versions:
-    runs-on: ubuntu-latest
+    runs-on: self-hosted
     outputs:
       matrix: ${{ steps.set_matrix.outputs.matrix }}
     steps:
@@ -112,7 +112,7 @@ jobs:
 
   build_and_release:
     needs: prepare_versions
-    runs-on: ubuntu-latest
+    runs-on: self-hosted
     strategy:
       matrix:
         version: ${{ fromJson(needs.prepare_versions.outputs.matrix) }}
@@ -174,8 +174,9 @@ jobs:
           echo "Latest UPX version: $LATEST_UPX"
           curl -LO "https://github.com/upx/upx/releases/download/v${LATEST_UPX}/upx-${LATEST_UPX}-amd64_linux.tar.xz"
           tar -xf "upx-${LATEST_UPX}-amd64_linux.tar.xz"
-          sudo cp "upx-${LATEST_UPX}-amd64_linux/upx" /usr/local/bin/
-          upx --version
+          upx_dir="$PWD/upx-${LATEST_UPX}-amd64_linux"
+          "$upx_dir/upx" --version
+          echo "$upx_dir" >> "$GITHUB_PATH"
 
       - name: Build optimized binaries
         if: env.skip != 'true'

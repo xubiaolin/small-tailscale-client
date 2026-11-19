@@ -11,13 +11,14 @@ permissions:
 
 jobs:
   package_and_push:
-    runs-on: ubuntu-latest
+    runs-on: self-hosted
 
     steps:
       - name: Checkout current repo
         uses: actions/checkout@v4
 
       - name: Create tarball and checksums
+        id: package
         run: |
           mkdir -p package
           cp scripts/* package/
@@ -31,10 +32,15 @@ jobs:
           sed -i "s|EXPECTED_CHECKSUM_SHA256=.*|EXPECTED_CHECKSUM_SHA256=\"$SHA256\"|" install.sh
           sed -i "s|EXPECTED_CHECKSUM_MD5=.*|EXPECTED_CHECKSUM_MD5=\"$MD5\"|" install.sh
 
-      - name: Copy tarball to openwrt repo
+          if [ "$GITHUB_REF" = refs/heads/main ]; then
+            echo 'publish=true' >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Publish tarball and checksums to main
+        if: steps.package.outputs.publish == 'true'
         run: |
-          git config --global user.email "actions@github.com"
-          git config --global user.name "GitHub Actions"
+          git config --local user.email "actions@github.com"
+          git config --local user.name "GitHub Actions"
           git add tailscale-openwrt-scripts.tar.gz install.sh
           git commit -m "$(date -u +'%Y-%m-%d %H:%M:%S' -d '+8 hours')"
           git push origin HEAD:main
