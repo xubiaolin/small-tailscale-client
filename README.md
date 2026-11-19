@@ -30,10 +30,12 @@
 
 | 官方 OpenWrt 版本 | 安装文件 | 安装前准备 |
 | --- | --- | --- |
-| 24.10 | `luci-app-small-tailscale_1.0.0-r1_all.ipk` | 在 **系统 → 软件包** 中更新软件包列表 |
-| 25.12 | `luci-app-small-tailscale-1.0.0-r1.apk` | 更新软件包列表，并导入同一构建的 APK 签名公钥 |
+| 24.10 | [下载 IPK（1.0.0-r1）](https://github.com/xubiaolin/small-tailscale-client/releases/download/luci-v1.0.0-r1/luci-app-small-tailscale_1.0.0-r1_all.ipk) | 在 **系统 → 软件包** 中更新软件包列表 |
+| 25.12 | [下载 APK（1.0.0-r1）](https://github.com/xubiaolin/small-tailscale-client/releases/download/luci-v1.0.0-r1/luci-app-small-tailscale-1.0.0-r1.apk) | 更新软件包列表，并导入[该版本的签名公钥](https://github.com/xubiaolin/small-tailscale-client/releases/download/luci-v1.0.0-r1/small-tailscale.pem) |
 
-安装包适用于各 CPU 架构。先在电脑上核对随包提供的 `SHA256SUMS`。若使用 OpenWrt 25.12，请将可信的 `small-tailscale.pem` 导入路由器一次。以下命令在公钥所在目录运行，把地址改成路由器的管理地址。
+安装包适用于各 CPU 架构。先在电脑上核对下载文件的 SHA256。[校验清单](https://github.com/xubiaolin/small-tailscale-client/releases/download/luci-v1.0.0-r1/SHA256SUMS) · [此版本的全部文件](https://github.com/xubiaolin/small-tailscale-client/releases/tag/luci-v1.0.0-r1)
+
+若使用 OpenWrt 25.12，请将可信的 `small-tailscale.pem` 导入路由器一次。以下命令在公钥所在目录运行，把地址改成路由器的管理地址。
 
 ```sh
 ssh root@192.168.1.1 'cat > /etc/apk/keys/small-tailscale.pem' < small-tailscale.pem

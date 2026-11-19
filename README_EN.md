@@ -35,7 +35,14 @@ The installer downloads the management scripts from this repository. To install 
 
 ### LuCI installation
 
-Use the `.ipk` on official OpenWrt 24.10 and the `.apk` on 25.12. Verify the files with the supplied `SHA256SUMS`. On 25.12, copy the matching trusted `small-tailscale.pem` to `/etc/apk/keys/` on the router. In **System → Software**, update the package lists, upload the package, then sign in again. Open **Services → 精简版 Tailscale** to download the client, configure the node and view its logs. [Package build and installation instructions (Chinese)](README.md#在-luci-中安装和管理)
+| Official OpenWrt version | LuCI package |
+| --- | --- |
+| 24.10 | [Download the IPK (1.0.0-r1)](https://github.com/xubiaolin/small-tailscale-client/releases/download/luci-v1.0.0-r1/luci-app-small-tailscale_1.0.0-r1_all.ipk) |
+| 25.12 | [Download the APK (1.0.0-r1)](https://github.com/xubiaolin/small-tailscale-client/releases/download/luci-v1.0.0-r1/luci-app-small-tailscale-1.0.0-r1.apk) · [APK signing key](https://github.com/xubiaolin/small-tailscale-client/releases/download/luci-v1.0.0-r1/small-tailscale.pem) |
+
+Verify the downloads against the checksum list. [SHA256SUMS](https://github.com/xubiaolin/small-tailscale-client/releases/download/luci-v1.0.0-r1/SHA256SUMS) · [All release assets](https://github.com/xubiaolin/small-tailscale-client/releases/tag/luci-v1.0.0-r1)
+
+On 25.12, copy the matching trusted `small-tailscale.pem` to `/etc/apk/keys/` on the router. In **System → Software**, update the package lists, upload the package, then sign in again. Open **Services → 精简版 Tailscale** to download the client, configure the node and view its logs. [Package build and installation instructions (Chinese)](README.md#在-luci-中安装和管理)
 
 ### Prerequisites
 
