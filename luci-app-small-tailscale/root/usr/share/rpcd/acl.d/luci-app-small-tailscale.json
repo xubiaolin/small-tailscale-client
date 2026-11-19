@@ -1,0 +1,17 @@
+{
+	"luci-app-small-tailscale": {
+		"description": "管理精简版 Tailscale",
+		"read": {
+			"ubus": {
+				"small-tailscale": ["status", "config", "logs"],
+				"small-tailscale.network": ["preview"]
+			}
+		},
+		"write": {
+			"ubus": {
+				"small-tailscale": ["save", "install", "start"],
+				"small-tailscale.network": ["apply"]
+			}
+		}
+	}
+}
