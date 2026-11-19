@@ -12,13 +12,23 @@ REPO = Path(__file__).resolve().parents[1]
 RPC = "/usr/libexec/rpcd/small-tailscale"
 
 
-@unittest.skipUnless(os.environ.get("OPENWRT_ROOTFS"), "需要官方 x86_64 rootfs")
 class RpcTest(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        rootfs = os.environ.get("OPENWRT_ROOTFS")
+        if not rootfs or not Path(rootfs).is_file():
+            raise RuntimeError("请将 OPENWRT_ROOTFS 设为官方 x86_64 rootfs.tar.gz 文件的路径")
+        listing = subprocess.run(["tar", "tzf", rootfs], stdout=subprocess.PIPE, check=True)
+        files = {name.removeprefix(b"./") for name in listing.stdout.splitlines()}
+        if not {b"bin/busybox", b"etc/openwrt_release", b"sbin/rpcd"} <= files:
+            raise RuntimeError(f"OPENWRT_ROOTFS 缺少 OpenWrt RPC 测试所需文件：{rootfs}")
+        cls.rootfs = rootfs
+
     def setUp(self):
         directory = tempfile.TemporaryDirectory()
         self.addCleanup(directory.cleanup)
         self.root = Path(directory.name)
-        subprocess.run(["tar", "xzf", os.environ["OPENWRT_ROOTFS"], "-C", self.root], check=True)
+        subprocess.run(["tar", "xzf", self.rootfs, "-C", self.root], check=True)
         for folder in ("tmp/log", "tmp/run", "etc/crontabs", "usr/share/small-tailscale/scripts"):
             (self.root / folder).mkdir(parents=True, exist_ok=True)
         (self.root / "dev/null").touch()
