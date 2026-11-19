@@ -1,0 +1,259 @@
+#!/usr/bin/ucode
+'use strict';
+
+import * as fs from 'fs';
+import { cursor } from 'uci';
+
+const methods = {preview: {routes: 'a'}, apply: {routes: 'a', token: 'a'}};
+const device = 'tailscale0';
+
+function capture(command) {
+	const pipe = fs.popen(command);
+	if (!pipe)
+		die('无法执行系统命令。');
+	const result = trim(pipe.read('all'));
+	if (pipe.close() != 0)
+		die('读取 OpenWrt 系统状态失败。');
+	return result;
+}
+
+function subnets(value) {
+	if (type(value) != 'string')
+		die('请输入以逗号分隔的 CIDR 网段。');
+	if (!trim(value))
+		return [];
+	let routes = [];
+	for (let item in split(value, ',')) {
+		const network = match(trim(item), /^([0-9a-fA-F.:]+)\/([0-9]{1,3})$/);
+		const address = network && iptoarr(network[1]);
+		if (!address || +network[2] > length(address) * 8)
+			die('无效的 CIDR 网段。');
+		const prefix = +network[2];
+		if (!prefix)
+			die('默认路由请使用出口节点设置。');
+		for (let i = 0; i < length(address); i++) {
+			const remaining = prefix - i * 8;
+			if (remaining < 8 && (address[i] & (remaining > 0 ? 255 >> remaining : 255)))
+				die('CIDR 必须填写网段的起始地址。');
+		}
+		push(routes, arrtoip(address) + '/' + prefix);
+	}
+	return sort(uniq(routes));
+}
+
+const interfaceName = 'smallts';
+const ruleName = 'smallts_subnets';
+const rule = {
+	src: '*', dest: '*', device,
+	direction: 'in', proto: 'all', target: 'ACCEPT'
+};
+
+// 此函数仅接收标准化的数值地址、前缀及十六进制摘要。
+function digest(value) {
+	return split(capture("printf '%s' '" + value + "' | sha256sum"), ' ')[0];
+}
+
+const ruleLabel = 'Small Tailscale subnets ';
+function label(routes) {
+	return ruleLabel + substr(digest(join(',', routes)), 0, 16);
+}
+
+function words(value) {
+	return type(value) == 'array' ? value : split(trim(value || ''), /\s+/);
+}
+
+function inspect(uci, routes) {
+	const network = uci.get_all('network');
+	const firewall = uci.get_all('firewall');
+	if (!network || !firewall)
+		die('读取 network 或 firewall 配置失败。');
+	let iface;
+	for (let key, section in network) {
+		if (section['.type'] == 'interface' && (device in words(section.device || section.ifname)))
+			iface = key;
+		if (section['.type'] == 'device' && device in words(section.ports))
+			die('tailscale0 已被网桥使用，请先检查网络配置。');
+	}
+	const create = !!length(routes) && !iface;
+	if (create && network[interfaceName])
+		die('接口名称 smallts 已被占用。');
+	const old = firewall[ruleName];
+	if (old) {
+		if (old['.type'] != 'rule' || !old.dest_ip || old.name != label(subnets(join(',', words(old.dest_ip)))))
+			die('防火墙规则名 smallts_subnets 已被占用。');
+		for (let key, expected in rule)
+			if (old[key] != expected)
+				die('已有的 smallts_subnets 规则与预期配置冲突。');
+		for (let key in keys(old))
+			if (substr(key, 0, 1) != '.' && key != 'dest_ip' && key != 'name' && !exists(rule, key))
+				die('已有的 smallts_subnets 规则包含自定义选项。');
+	}
+	if (create) {
+		for (let key, section in firewall)
+			if (section['.type'] == 'zone' && interfaceName in words(section.network))
+				die('已有防火墙区引用了 smallts，创建接口会改变其访问策略。');
+	}
+	const current = old ? words(old.dest_ip) : [];
+	const update = join(',', current) != join(',', routes);
+	const preview = [
+		create ? '创建非托管接口 smallts，设备 tailscale0。' :
+			(iface ? '保留现有接口 ' + iface + '（tailscale0）。' : '无需创建接口。'),
+		length(routes) ? '防火墙转发规则：仅允许 tailscale0 转发至 ' + join(', ', routes) + '。' :
+			'清除插件管理的子网转发规则。',
+		'路由器自身的 LuCI 和 SSH 继续使用已有的入站规则。'
+	];
+	const removed = filter(current, cidr => !(cidr in routes));
+	if (length(removed))
+		push(preview, '移除插件规则中的旧网段 ' + join(', ', removed) + '。');
+	return {create, update, preview: join('\n', preview)};
+}
+
+function save(uci, routes, plan) {
+	if (plan.create) {
+		if (!uci.set('network', interfaceName, 'interface') ||
+		    !uci.set('network', interfaceName, 'proto', 'none') ||
+		    !uci.set('network', interfaceName, 'device', device) ||
+		    !uci.commit('network'))
+			die('保存网络接口失败。');
+	}
+	if (plan.update) {
+		if (length(routes)) {
+			if (!uci.set('firewall', ruleName, 'rule'))
+				die('创建子网转发规则失败。');
+			for (let key, val in {...rule, dest_ip: routes, name: label(routes)})
+				if (!uci.set('firewall', ruleName, key, val))
+					die('保存子网转发规则失败。');
+		}
+		else if (!uci.delete('firewall', ruleName))
+			die('清除子网转发规则失败。');
+		if (!uci.commit('firewall'))
+			die('提交防火墙配置失败。');
+	}
+}
+
+function previewToken(routes) {
+	const sums = capture('sha256sum /etc/config/network /etc/config/firewall');
+	const config = join(':', map(split(sums, '\n'), l => split(l, ' ')[0]));
+	return digest(config + ':' + join(',', routes));
+}
+
+// 部分 fw4 版本会在加载 nftables 失败后返回 0，核对两种地址族实际加载的规则。
+function active(routes) {
+	const installed = json(capture('nft -j list chain inet fw4 forward'));
+	const comment = '!fw4: ' + label(routes);
+	const families = {};
+	for (let entry in installed.nftables) {
+		const r = entry.rule;
+		if (index(r?.comment || '', '!fw4: ' + ruleLabel) != 0)
+			continue;
+		if (r.comment != comment)
+			return false;
+		for (let expr in r.expr) {
+			const destination = expr.match?.left?.payload;
+			if (destination?.field == 'daddr')
+				families[destination.protocol] = true;
+		}
+	}
+	const expected = uniq(map(routes, cidr => index(cidr, ':') < 0 ? 'ip' : 'ip6'));
+	return join(',', sort(keys(families))) == join(',', sort(expected));
+}
+
+// UCI 使用独立的暂存目录。两个文件分别以 rename 切换，重载失败时恢复原文件。
+function activate(routes, plan, token) {
+	if (!plan.create && !plan.update) {
+		if (active(routes))
+			return;
+		if (system('fw4 check >/dev/null && fw4 reload >/dev/null') != 0 || !active(routes))
+			die('现有防火墙配置尚未生效，请检查 fw4。');
+		return;
+	}
+	const dir = capture('mktemp -d /etc/config/.smallts.XXXXXX');
+	const changed = [];
+	let published = {};
+	let recoveryError = false;
+	let reloadNetwork = false, reloadFirewall = false;
+	try {
+		if (!fs.mkdir(dir + '/new') || !fs.mkdir(dir + '/delta') ||
+		    system('cp -p /etc/config/network /etc/config/firewall ' + dir) != 0 ||
+		    system('cp -p ' + dir + '/network ' + dir + '/firewall ' + dir + '/new') != 0)
+			die('备份网络配置失败。');
+		const staged = cursor(dir + '/new', dir + '/delta');
+		save(staged, routes, plan);
+		if (token != previewToken(routes) ||
+		    length(cursor().changes('network')) || length(cursor().changes('firewall')))
+			die('配置已变化或有待提交的 UCI 修改，请重新预览。');
+		for (let name in ['network', 'firewall']) {
+			if (!(name == 'network' ? plan.create : plan.update))
+				continue;
+			const file = dir + '/new/' + name;
+			const live = '/etc/config/' + name;
+			published[name] = fs.readfile(file);
+			if (fs.readfile(live) != fs.readfile(dir + '/' + name) || !fs.rename(file, live))
+				die('系统配置发生变化或写入失败，请重新预览。');
+			push(changed, name);
+		}
+		if (plan.update && system('fw4 check >/dev/null') != 0)
+			die('fw4 校验失败。');
+		if (plan.create) {
+			reloadNetwork = true;
+			if (system('ubus call network reload >/dev/null') != 0)
+				die('网络接口重载失败。');
+		}
+		if (plan.update) {
+			reloadFirewall = true;
+			if (system('fw4 reload >/dev/null') != 0 || !active(routes))
+				die('防火墙重载失败。');
+		}
+	}
+	catch (e) {
+		for (let name in changed) {
+			const live = '/etc/config/' + name;
+			if (fs.readfile(live) != published[name] || !fs.rename(dir + '/' + name, live))
+				recoveryError = true;
+		}
+		if (reloadNetwork && system('ubus call network reload >/dev/null') != 0)
+			recoveryError = true;
+		if (reloadFirewall && system('fw4 reload >/dev/null') != 0)
+			recoveryError = true;
+		if (recoveryError)
+			die(e.message + ' 请检查当前网络状态。备份目录：' + dir);
+		system(['rm', '-rf', dir]);
+		die(e.message);
+	}
+	system(['rm', '-rf', dir]);
+}
+
+function run() {
+	if (ARGV[0] == 'list')
+		return methods;
+	if (ARGV[0] != 'call' || !exists(methods, ARGV[1]))
+		die('未知的网络操作。');
+	const request = json(fs.stdin.read('all'));
+	const routes = subnets(request.routes);
+	let lock;
+	if (ARGV[1] == 'apply') {
+		lock = fs.open('/var/lock/small-tailscale-network', 'a', 0600);
+		if (!lock || !lock.lock('x'))
+			die('网络配置锁定失败。');
+	}
+	const uci = cursor();
+	if (length(uci.changes('network')) || length(uci.changes('firewall')))
+		die('网络或防火墙有待提交的 UCI 修改，请先处理。');
+	const token = previewToken(routes);
+	const plan = inspect(uci, routes);
+	if (ARGV[1] == 'apply') {
+		if (type(request.token) != 'string' || request.token != token)
+			die('网段或系统配置已变化，请重新预览。');
+		if (!(capture('/usr/share/small-tailscale/source') in ['none', 'project']))
+			die('请先处理已有的外部 Tailscale 安装。');
+		activate(routes, plan, token);
+		return {preview: '已应用网络配置。', token: previewToken(routes)};
+	}
+	return {preview: plan.preview, token};
+}
+
+try {
+	print(sprintf('%J\n', run()));
+} catch (e) {
+	print(sprintf('%J\n', { error: e.message }));
+}
