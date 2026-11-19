@@ -4,7 +4,7 @@ external() { echo external; exit 0; }
 exists() { [ -e "$1" ] || [ -L "$1" ]; }
 
 for file in /usr/lib/opkg/info/tailscale.control /usr/lib/opkg/info/tailscaled.control \
-	/usr/sbin/tailscaled /etc/config/tailscale; do
+	/usr/sbin/tailscale /usr/sbin/tailscaled /etc/config/tailscale; do
 	exists "$file" && external
 done
 # post-install 期间 apk 持有事务锁。直接读取已安装清单，也检查事务已释放到磁盘的程序和配置。
