@@ -1,0 +1,36 @@
+#!/bin/sh
+# 软件源包、非本项目的服务或同名程序优先，避免覆盖混装设备。
+external() { echo external; exit 0; }
+exists() { [ -e "$1" ] || [ -L "$1" ]; }
+
+for file in /usr/lib/opkg/info/tailscale.control /usr/lib/opkg/info/tailscaled.control \
+	/usr/sbin/tailscaled /etc/config/tailscale; do
+	exists "$file" && external
+done
+if command -v apk >/dev/null && { apk info -e tailscale || apk info -e tailscaled; } >/dev/null 2>&1; then
+	external
+fi
+project=false
+if exists /etc/tailscale; then
+	[ -d /etc/tailscale ] && [ ! -L /etc/tailscale ] || external
+	if [ -f /etc/tailscale/tools.sh ] && [ -f /etc/tailscale/helper.sh ]; then
+		project=true
+	elif [ -n "$(ls -A /etc/tailscale)" ]; then
+		external
+	fi
+fi
+if exists /etc/init.d/tailscale; then
+	[ "$project" = true ] && grep -Fq '/etc/tailscale/tools.sh' /etc/init.d/tailscale || external
+fi
+if exists /usr/bin/tailscale-helper; then
+	[ "$project" = true ] && [ "$(readlink /usr/bin/tailscale-helper)" = /etc/tailscale/helper.sh ] || external
+fi
+for file in /usr/bin/tailscale /usr/bin/tailscaled; do
+	exists "$file" || continue
+	[ "$project" = true ] || external
+	case "$(readlink "$file")" in /usr/local/bin/tailscaled|/tmp/tailscaled) ;; *) external ;; esac
+done
+for file in /usr/local/bin/tailscaled /tmp/tailscaled /etc/config/tailscaled.state; do
+	if exists "$file"; then [ "$project" = true ] || external; fi
+done
+if [ "$project" = true ]; then echo project; else echo none; fi
