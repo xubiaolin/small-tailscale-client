@@ -57,7 +57,8 @@ forward=$(nft list chain inet fw4 forward)
 echo "$forward" | grep -F 'iifname "tailscale0" ip daddr 10.8.0.0/16' | grep -q accept
 echo "$forward" | grep -F 'iifname "tailscale0" ip6 daddr fd71::/64' | grep -q accept
 confirm ''
-if nft list chain inet fw4 forward | grep -q tailscale0; then exit 1; fi
+forward=$(nft list chain inet fw4 forward)
+if echo "$forward" | grep -q tailscale0; then exit 1; fi
 # 保留用户已有的同名配置和指向尚未创建接口的防火墙区。
 uci set firewall.smallts_subnets=rule
 uci set firewall.smallts_subnets.name=User
@@ -87,7 +88,8 @@ printf '#!/bin/sh\n[ "$1" != check ] || exit 1\nexec /sbin/fw4.real "$@"\n' > /s
 chmod +x /sbin/fw4
 field "$(apply '192.168.1.0/24' "$token")" error >/dev/null
 [ "$before" = "$(snapshot)" ]
-if nft list chain inet fw4 forward | grep -q tailscale0; then exit 1; fi
+forward=$(nft list chain inet fw4 forward)
+if echo "$forward" | grep -q tailscale0; then exit 1; fi
 # 部分 fw4 版本会吞掉 nft 加载的退出码，RPC 以实际规则为准。
 printf '#!/bin/sh\n[ "$1" != reload ] || exit 0\nexec /sbin/fw4.real "$@"\n' > /sbin/fw4
 field "$(apply '192.168.1.0/24' "$token")" error >/dev/null

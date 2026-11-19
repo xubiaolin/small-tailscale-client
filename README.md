@@ -70,6 +70,14 @@ sh luci-app-small-tailscale/build.sh /path/to/24.10.8-sdk /path/to/25.12.6-sdk
 
 `dist/` 含 IPK、签名 APK、公钥和校验清单。相同提交、SDK 和 RSA 私钥可重复生成相同文件。构建默认使用最近一次更改插件或管理脚本的提交时间，也可设置 `SOURCE_DATE_EPOCH` 指定 Unix 时间戳。
 
+### 发布新插件版本
+
+1. 在同一提交中更新 `luci-app-small-tailscale/build.sh` 的 `version`，并更新中英文 README 的安装包名、下载地址及 Release 链接。提交 PR 后，GitHub Actions 会检查 CLI、浏览器和两代 OpenWrt 的 RPC 与防火墙行为。
+2. 将 PR 合入 `main`，在该提交创建并推送 `luci-v<version>` 标签。**LuCI Release** 工作流会构建两种格式，并用 `luci-release` 环境的 `LUCI_APK_SIGNING_KEY` 签名 APK。该环境只向 `luci-v*` 标签开放。
+3. 工作流在官方 24.10.8 和 25.12.6 环境中实际安装软件包，发布附件后从 README 的公开地址重新下载，并与本次构建逐项核对。在 Actions 页面手动运行 **LuCI Release**、填写当前发布标签，可以再次验证下载和安装。
+
+更改 `scripts/` 后，在仓库根目录运行 `sh tools/package-cli.sh` 同步 CLI 归档及 `install.sh` 内的校验值。提交前运行 `sh tools/package-cli.sh --check` 可验证两者与源码一致。
+
 ## 通过命令行脚本安装
 
 ### 1. 运行安装脚本

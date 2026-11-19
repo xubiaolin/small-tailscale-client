@@ -5,42 +5,45 @@ on:
   push:
     paths:
       - "scripts/*"
+      - "tools/package-cli.sh"
 
 permissions:
   contents: write
 
+concurrency:
+  group: package-cli-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
   package_and_push:
     runs-on: self-hosted
-
     steps:
-      - name: Checkout current repo
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Create tarball and checksums
-        id: package
+      - name: Build CLI archive
+        run: sh tools/package-cli.sh
+
+      - name: Publish updated archive and installer to main
+        if: github.ref == 'refs/heads/main'
         run: |
-          mkdir -p package
-          cp scripts/* package/
-          tar -czvf tailscale-openwrt-scripts.tar.gz -C package .
+          git config user.email "actions@github.com"
+          git config user.name "GitHub Actions"
+          for attempt in 1 2 3; do
+            git add -- tailscale-openwrt-scripts.tar.gz install.sh
+            if git diff --cached --quiet; then
+              exit 0
+            fi
+            base=$(git rev-parse HEAD)
+            git commit -m '更新 CLI 脚本归档和安装校验值'
+            if git push origin HEAD:refs/heads/main; then
+              exit 0
+            fi
 
-          # 生成 SHA256 和 MD5 文件
-          SHA256=$(sha256sum tailscale-openwrt-scripts.tar.gz | awk '{print $1}')
-          MD5=$(md5sum tailscale-openwrt-scripts.tar.gz | awk '{print $1}')
-
-          # 替换 install.sh 中的 SHA256 和 MD5 校验值
-          sed -i "s|EXPECTED_CHECKSUM_SHA256=.*|EXPECTED_CHECKSUM_SHA256=\"$SHA256\"|" install.sh
-          sed -i "s|EXPECTED_CHECKSUM_MD5=.*|EXPECTED_CHECKSUM_MD5=\"$MD5\"|" install.sh
-
-          if [ "$GITHUB_REF" = refs/heads/main ]; then
-            echo 'publish=true' >> "$GITHUB_OUTPUT"
-          fi
-
-      - name: Publish tarball and checksums to main
-        if: steps.package.outputs.publish == 'true'
-        run: |
-          git config --local user.email "actions@github.com"
-          git config --local user.name "GitHub Actions"
-          git add tailscale-openwrt-scripts.tar.gz install.sh
-          git commit -m "$(date -u +'%Y-%m-%d %H:%M:%S' -d '+8 hours')"
-          git push origin HEAD:main
+            # 仅当远端分支已前进时重建，避免旧归档覆盖并发合入的脚本。
+            git fetch origin refs/heads/main
+            if [ "$attempt" = 3 ] || [ "$(git rev-parse FETCH_HEAD)" = "$base" ]; then
+              exit 1
+            fi
+            git checkout --detach FETCH_HEAD
+            sh tools/package-cli.sh
+          done

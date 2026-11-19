@@ -1,0 +1,70 @@
+name: LuCI checks
+
+on: pull_request
+
+permissions:
+  contents: read
+
+jobs:
+  cli:
+    name: CLI and script archive
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+      - run: sh tests/cli.sh
+      - run: sh tools/package-cli.sh --check
+
+  browser:
+    name: LuCI browser
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        with:
+          node-version: '24'
+      - name: Install Chromium and Playwright
+        run: |
+          npm install --prefix "$RUNNER_TEMP/browser" --no-save --no-package-lock playwright@1.65.1
+          "$RUNNER_TEMP/browser/node_modules/.bin/playwright" install --with-deps chromium
+      - name: Run the LuCI browser tests
+        run: NODE_PATH="$RUNNER_TEMP/browser/node_modules" node --test tests/luci.cjs
+
+  openwrt:
+    name: RPC and fw4 on OpenWrt ${{ matrix.version }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        version: ['24.10.8', '25.12.6']
+    env:
+      OPENWRT_VERSION: ${{ matrix.version }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+      - name: Fetch and verify the official x86/64 rootfs
+        run: |
+          rootfs=$(python3 tools/openwrt-fixture.py rootfs "$OPENWRT_VERSION" "$RUNNER_TEMP/openwrt")
+          echo "OPENWRT_ROOTFS=$rootfs" >> "$GITHUB_ENV"
+      - name: Test RPC in the OpenWrt chroot
+        run: sudo env OPENWRT_ROOTFS="$OPENWRT_ROOTFS" python3 tests/rpc.py -v
+      - name: Load host kernel modules for fw4
+        run: |
+          modules=(nf_tables nft_ct nft_limit nft_reject_inet nft_chain_nat nft_masq)
+          if ! sudo modprobe -a "${modules[@]}"; then
+            sudo apt-get update
+            sudo apt-get install -y "linux-modules-extra-$(uname -r)"
+            sudo modprobe -a "${modules[@]}"
+          fi
+      - name: Test network RPC against the loaded nftables rules
+        run: |
+          image="small-ts-openwrt:$OPENWRT_VERSION"
+          docker import "$OPENWRT_ROOTFS" "$image"
+          sh tests/network-rpc.sh "$image"

@@ -1,0 +1,83 @@
+name: LuCI Release
+
+on:
+  push:
+    tags: ['luci-v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 已发布的 LuCI 标签（与所选分支的 README 和包版本一致）
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  release:
+    if: github.event_name == 'push' && !github.event.deleted
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    environment: luci-release
+    concurrency: luci-release-${{ github.ref }}
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          # build.sh 用最近一次更改插件或管理脚本的提交时间生成可重现的包。
+          fetch-depth: 0
+          persist-credentials: false
+      - name: 核对标签、包版本和中英文 README
+        run: python3 tools/luci-release.py "$GITHUB_REF_NAME" links
+      - name: 准备官方 SDK
+        run: |
+          for version in 24.10.8 25.12.6; do
+            python3 tools/openwrt-fixture.py sdk "$version" "$RUNNER_TEMP/openwrt" > "$RUNNER_TEMP/sdk-$version.path"
+          done
+      - name: 用正式密钥构建 IPK 与 APK
+        env:
+          LUCI_APK_SIGNING_KEY: ${{ secrets.LUCI_APK_SIGNING_KEY }}
+        run: |
+          : "${LUCI_APK_SIGNING_KEY:?luci-release 环境缺少 APK 签名私钥}"
+          APK_SIGNING_KEY=$(mktemp "$RUNNER_TEMP/luci-private-key.XXXXXXXX")
+          trap 'rm -f "$APK_SIGNING_KEY"' EXIT
+          printf '%s\n' "$LUCI_APK_SIGNING_KEY" > "$APK_SIGNING_KEY"
+          unset LUCI_APK_SIGNING_KEY
+          export APK_SIGNING_KEY DIST_DIR="$RUNNER_TEMP/dist"
+          sh luci-app-small-tailscale/build.sh "$(cat "$RUNNER_TEMP/sdk-24.10.8.path")" "$(cat "$RUNNER_TEMP/sdk-25.12.6.path")"
+          python3 tools/luci-release.py "$GITHUB_REF_NAME" verify "$DIST_DIR"
+      - name: 在两个官方 rootfs 安装待发布的软件包
+        run: |
+          for version in 24.10.8 25.12.6; do
+            rootfs=$(python3 tools/openwrt-fixture.py rootfs "$version" "$RUNNER_TEMP/openwrt")
+            sudo sh tests/install-package.sh "$rootfs" "$RUNNER_TEMP/dist"
+          done
+      - name: 发布经过安装验证的资产
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag_commit=$(git ls-remote --exit-code origin "refs/tags/$GITHUB_REF_NAME" "refs/tags/$GITHUB_REF_NAME^{}" | tail -1 | cut -f1)
+          test "$tag_commit" = "$(git rev-parse HEAD)"
+          python3 tools/luci-release.py "$GITHUB_REF_NAME" publish "$RUNNER_TEMP/dist"
+      - name: 从中英文 README 匿名下载并逐项比对构建产物
+        run: python3 tools/luci-release.py "$GITHUB_REF_NAME" download "$RUNNER_TEMP/public" --compare "$RUNNER_TEMP/dist"
+
+  verify-published:
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    env:
+      LUCI_TAG: ${{ inputs.tag }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+      - name: 从中英文 README 匿名下载四项资产并核对摘要
+        run: python3 tools/luci-release.py "$LUCI_TAG" download "$RUNNER_TEMP/public"
+      - name: 在两个官方 rootfs 安装下载的软件包
+        run: |
+          for version in 24.10.8 25.12.6; do
+            rootfs=$(python3 tools/openwrt-fixture.py rootfs "$version" "$RUNNER_TEMP/openwrt")
+            sudo sh tests/install-package.sh "$rootfs" "$RUNNER_TEMP/public"
+          done
