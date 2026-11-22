@@ -136,9 +136,9 @@ class RpcTest(unittest.TestCase):
         self.assertEqual((status["source"], status["version"], status["auth_url"]),
                          ("project", "v1.2.3", "https://login.example/a"))
         self.write("tmp/node.json", json.dumps({"BackendState": "NeedsLogin"}))
-        self.write("etc/init.d/tailscale", '#!/bin/sh\n[ "$1" = running ]\n', True)
+        self.write("etc/init.d/tailscale", '#!/bin/sh\n# /etc/tailscale/tools.sh\n[ "$1" = running ]\n', True)
         self.assertIs(self.call("status_auth")["daemon_running"], True)
-        self.write("etc/init.d/tailscale", "#!/bin/sh\nexit 1\n", True)
+        self.write("etc/init.d/tailscale", "#!/bin/sh\n# /etc/tailscale/tools.sh\nexit 1\n", True)
         self.assertIs(self.call("status_auth")["daemon_running"], False)
         self.write("tmp/node.json", json.dumps({"BackendState": "Running", "TailscaleIPs": ["100.70.1.2"]}))
         status = self.call("status")
