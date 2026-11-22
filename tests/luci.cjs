@@ -51,7 +51,7 @@ async function openView(t, name, replies = {}, writable = true) {
 				const data = Object.fromEntries((spec.params || []).map((p, i) => [p, args[i]]));
 				window.calls.push({ object: spec.object, method: spec.method, data: structuredClone(data) });
 				const reply = window.replies[spec.method === 'status_auth' ? 'status' : spec.method];
-				return spec.method === 'logs' ? reply[data.kind] : (reply || { ok: true });
+				return structuredClone(spec.method === 'logs' ? reply[data.kind] : (reply || { ok: true }));
 			};
 		} };
 		const poll = { add: fn => callbacks.push(fn) };
@@ -63,18 +63,101 @@ async function openView(t, name, replies = {}, writable = true) {
 	return page;
 }
 
-test('首次下载保存安装选择，提交独立下载任务，启动按钮等待程序就绪', async t => {
+test('首次下载先保存安装选择，任务解锁后以路由器实际报告为准', async t => {
 	const page = await openView(t, 'manage');
 	assert.equal(await page.getByLabel('安装位置').inputValue(), 'local');
 	assert.ok(await page.getByText('跟随最新', { exact: true }).first().count());
 	const start = page.getByRole('button', { name: '启动并连接' });
-	assert.ok(await start.isDisabled());
+	assert.equal(await start.count(), 0);
 	await page.getByLabel('安装位置').selectOption('tmp');
-	await page.getByRole('button', { name: '下载安装', exact: true }).click();
+	const download = page.getByRole('button', { name: '保存并下载安装', exact: true });
+	await page.getByRole('link', { name: '查看日志' }).focus();
+	await page.keyboard.press('Tab');
+	assert.ok(await download.evaluate(el => el === document.activeElement));
+	await page.keyboard.press('Enter');
 	const calls = await page.evaluate(() => window.calls.filter(x => ['install', 'save', 'start'].includes(x.method)));
 	assert.deepEqual(calls.map(x => x.method), ['save', 'install']);
 	assert.equal(calls[0].data.mode, 'tmp');
 	assert.equal(calls[0].data.pinned_version, '');
+	assert.ok(await page.getByText(/任务已提交/).isVisible());
+	assert.ok(await page.getByRole('button', { name: '下载安装', exact: true }).isDisabled());
+	await page.evaluate(async () => {
+		Object.assign(window.replies.status, { busy: true });
+		await window.refresh();
+	});
+	assert.ok(await page.getByText(/路由器报告操作进行中/).isVisible());
+	await page.evaluate(async () => {
+		Object.assign(window.replies.status, { busy: false, source: 'project', installed: true, version: 'v1.92.3' });
+		await window.refresh();
+	});
+	assert.ok(await start.isEnabled());
+	assert.ok(await page.getByText(/路由器检测到客户端已安装/).isVisible());
+	assert.ok(await start.evaluate(el => el === document.activeElement));
+});
+
+test('键盘安装后进入待授权时聚焦可用入口，后续轮询保留用户焦点', async t => {
+	const cases = [
+		{ url: '', target: '维护操作' },
+		{ url: 'https://login.example.test/a', target: '打开授权页面' },
+		{ url: '', target: '查看日志', moved: true }
+	];
+	for (const { url, target, moved } of cases) {
+		const page = await openView(t, 'manage');
+		const logs = page.getByRole('link', { name: '查看日志' });
+		await page.keyboard.press('Tab');
+		assert.ok(await logs.evaluate(el => el === document.activeElement));
+		await page.keyboard.press('Tab');
+		const download = page.getByRole('button', { name: '下载安装', exact: true });
+		assert.ok(await download.evaluate(el => el === document.activeElement));
+		await page.keyboard.press('Enter');
+		assert.ok(await page.getByText(/任务已提交/).isVisible());
+		if (moved) await page.keyboard.press('Shift+Tab');
+		await page.evaluate(async url => {
+			Object.assign(window.replies.status, {
+				source: 'project', installed: true, state: 'NeedsLogin', daemon_running: true, auth_url: url
+			});
+			await window.refresh();
+		}, url);
+		assert.ok(await page.getByText(/路由器检测到客户端已安装/).isVisible());
+		assert.equal(await page.evaluate(() => document.activeElement.textContent), target);
+		if (!url && !moved) {
+			await page.keyboard.press('Enter');
+			assert.ok(await page.getByRole('button', { name: '启动并连接' }).isEnabled());
+			await page.evaluate(async () => {
+				window.replies.status.auth_url = 'https://login.example.test/a';
+				await window.refresh();
+			});
+			assert.ok(await page.getByRole('link', { name: '打开授权页面' }).isVisible());
+			assert.equal(await page.evaluate(() => document.activeElement.textContent), '维护操作');
+		}
+	}
+});
+
+test('短视口中首次安装后将键盘焦点和维护入口一起带进视口', async t => {
+	for (const width of [320, 390]) {
+		const page = await openView(t, 'manage');
+		await page.setViewportSize({ width, height: 480 });
+		await page.addStyleTag({ content: '.smallts-facts > div:nth-child(4) { min-height: 290px; }' });
+		await page.keyboard.press('Tab');
+		await page.keyboard.press('Tab');
+		const download = page.getByRole('button', { name: '下载安装', exact: true });
+		assert.ok(await download.evaluate(el => el === document.activeElement));
+		await page.keyboard.press('Enter');
+		await page.evaluate(async () => {
+			Object.assign(window.replies.status, {
+				source: 'project', installed: true, state: 'NeedsLogin', daemon_running: true,
+				version: 'v1.92.3', auth_url: ''
+			});
+			await window.refresh();
+		});
+		const maintenance = page.getByText('维护操作', { exact: true });
+		assert.ok(await maintenance.evaluate(el => el === document.activeElement));
+		const box = await maintenance.boundingBox();
+		assert.ok(box.y >= 0 && box.y + box.height <= 480, '维护入口超出 ' + width + '×480 视口');
+		const scrollY = await page.evaluate(() => window.scrollY);
+		await page.evaluate(() => window.refresh());
+		assert.equal(await page.evaluate(() => window.scrollY), scrollY);
+	}
 });
 
 test('项目节点保留实际版本，从待授权轮询至已连接，并显示 Tailscale IP', async t => {
@@ -99,17 +182,96 @@ test('项目节点保留实际版本，从待授权轮询至已连接，并显�
 	assert.ok(await page.getByText('已连接', { exact: true }).isVisible());
 });
 
+test('批准等待期间任务解锁，批准后更新节点和 IP 并收起等待文案', async t => {
+	const page = await openView(t, 'manage', {
+		status: { source: 'project', installed: true, state: 'Stopped', version: 'v1.92.3', ips: [] }
+	});
+	await page.getByRole('button', { name: '启动并连接' }).click();
+	await page.evaluate(async () => {
+		Object.assign(window.replies.status, { busy: false, state: 'NeedsMachineAuth' });
+		await window.refresh();
+	});
+	assert.ok(await page.getByText('等待控制端管理员批准此设备。', { exact: true }).isVisible());
+	assert.ok(await page.getByLabel('主机名', { exact: true }).isEditable());
+	await page.evaluate(async () => {
+		Object.assign(window.replies.status, { state: 'Running', ips: ['100.64.0.12'] });
+		await window.refresh();
+	});
+	assert.ok(await page.getByText('100.64.0.12', { exact: true }).isVisible());
+	assert.ok(await page.getByText('已连接', { exact: true }).isVisible());
+	assert.equal(await page.getByText(/等待控制端管理员批准/).count(), 0);
+});
+
 test('网页未修改时直接使用设备的最新设置，旧页面提交冲突后保留输入', async t => {
 	const page = await openView(t, 'manage', { save: { error: '设置已由其他入口修改，请刷新页面后重新保存。' } });
 	await page.evaluate(() => { window.replies.config = { ...window.replies.config, mirror: 'https://cli.example' }; });
 	await page.getByRole('button', { name: '下载安装', exact: true }).click();
 	assert.deepEqual(await page.evaluate(() => window.calls.filter(x => ['save', 'install'].includes(x.method)).map(x => x.method)), ['install']);
+	await page.evaluate(() => window.refresh());
+	assert.ok(await page.getByText(/结果待确认/).isVisible());
 	await page.getByLabel('主机名', { exact: true }).fill('updated');
-	await page.getByRole('button', { name: '下载安装', exact: true }).click();
-	assert.ok(await page.getByText(/设置已由其他入口修改/).isVisible());
+	await page.getByRole('button', { name: '保存并下载安装', exact: true }).click();
+	assert.ok(await page.getByText(/设置已由其他入口修改/).first().isVisible());
 	assert.equal(await page.getByLabel('主机名', { exact: true }).inputValue(), 'updated');
 	assert.deepEqual(await page.evaluate(() => window.calls.filter(x => ['save', 'install'].includes(x.method)).map(x => x.method)), ['install', 'save']);
 	assert.equal(await page.evaluate(() => window.calls.find(x => x.method === 'save').data.previous.mirror), 'https://github.com');
+});
+
+test('已连接时在维护操作中确认重装，先保存并保留任务提交错误，可按原设置重试', async t => {
+	const page = await openView(t, 'manage', {
+		status: { source: 'project', installed: true, state: 'Running', version: 'v1.92.3', ips: [] },
+		install: { error: '无法启动任务' }
+	});
+	await page.getByLabel('主机名', { exact: true }).fill('router12');
+	assert.equal(await page.getByRole('button', { name: '保存并更新或重装' }).count(), 0);
+	await page.getByText('维护操作', { exact: true }).click();
+	const reinstall = page.getByRole('button', { name: '保存并更新或重装' });
+	await reinstall.click();
+	const dialog = page.getByRole('dialog');
+	assert.ok(await dialog.getByText(/短暂中断连接/).isVisible());
+	assert.ok(await dialog.getByRole('button', { name: '返回' }).evaluate(el => el === document.activeElement));
+	await page.keyboard.press('Escape');
+	assert.ok(await reinstall.evaluate(el => el === document.activeElement));
+	await reinstall.click();
+	await dialog.getByRole('button', { name: '提交安装任务' }).click();
+	assert.ok(await page.getByText(/设置已保存。提交失败。无法启动任务/).isVisible());
+	await page.evaluate(() => { window.replies.install = { ok: true }; });
+	await page.getByRole('button', { name: '更新或重装', exact: true }).click();
+	await dialog.getByRole('button', { name: '提交安装任务' }).click();
+	await page.evaluate(() => window.refresh());
+	assert.ok(await page.getByText(/结果待确认/).isVisible());
+	assert.match(await page.getByRole('link', { name: '安装与更新记录' }).getAttribute('href'), /#log-install$/);
+	assert.deepEqual(await page.evaluate(() => window.calls.filter(x => ['save', 'install'].includes(x.method)).map(x => x.method)),
+		['save', 'install', 'install']);
+	await page.getByRole('button', { name: '应用连接设置' }).click();
+	await page.evaluate(() => window.refresh());
+	assert.ok(await page.getByText(/结果待确认/).isVisible());
+	assert.match(await page.getByRole('link', { name: '运行日志' }).getAttribute('href'), /#log-runtime$/);
+});
+
+test('待授权无地址时显示守护进程状态和日志，有地址时可授权并看到批准状态', async t => {
+	const page = await openView(t, 'manage', {
+		status: { source: 'project', installed: true, state: 'NeedsLogin', version: 'v1.92.3', daemon_running: true, auth_url: '' }
+	});
+	assert.ok(await page.getByText(/授权地址暂未返回/).isVisible());
+	assert.ok(await page.getByText('运行中', { exact: true }).isVisible());
+	assert.match(await page.getByRole('link', { name: '运行日志' }).getAttribute('href'), /#log-runtime$/);
+	await page.getByText('维护操作', { exact: true }).click();
+	assert.ok(await page.getByRole('button', { name: '启动并连接' }).isEnabled());
+	await page.evaluate(async () => {
+		window.replies.status.auth_url = 'https://login.example.test/a';
+		window.replies.status.busy = true;
+		await window.refresh();
+	});
+	const auth = page.getByRole('link', { name: '打开授权页面' });
+	assert.equal(await auth.getAttribute('target'), '_blank');
+	await auth.focus();
+	await page.evaluate(async () => {
+		window.replies.status.state = 'NeedsMachineAuth';
+		await window.refresh();
+	});
+	assert.ok(await page.getByText('等待管理员批准', { exact: true }).isVisible());
+	assert.ok(await page.getByRole('heading', { name: '节点状态' }).evaluate(el => el === document.activeElement));
 });
 
 test('外部安装只显示来源和原渠道管理指引，所有写操作均不可用', async t => {
@@ -130,6 +292,11 @@ test('共享设置按用途展示，保存版本锁定、镜像和授权参数�
 	for (const label of ['主机名', '接受 DNS 配置', '通告子网路由', '使用出口节点', '控制服务器']) {
 		assert.ok(await page.getByLabel(label, { exact: true }).isVisible());
 	}
+	await page.getByLabel('自动更新').focus();
+	await page.keyboard.press('Tab');
+	assert.ok(await page.getByLabel('主机名', { exact: true }).evaluate(el => el === document.activeElement));
+	await page.keyboard.press('Tab');
+	assert.ok(await page.getByLabel('控制服务器', { exact: true }).evaluate(el => el === document.activeElement));
 	await page.getByLabel('主机名', { exact: true }).fill('home-router');
 	assert.equal(await page.getByLabel('接受 DNS 配置').inputValue(), 'false');
 	await page.getByText('高级设置', { exact: true }).click();
@@ -152,27 +319,104 @@ test('共享设置按用途展示，保存版本锁定、镜像和授权参数�
 	assert.equal(saved.params['auth-key'], '••••');
 });
 
-test('网络预览与应用分开，修改网段会废弃预览，后端拒绝后要求重新预览', async t => {
+test('子网预览读取草稿，应用须先保存，失败后重新预览并可清空规则', async t => {
 	const page = await openView(t, 'manage', {
 		preview: { preview: '仅允许转发至 192.168.1.0/24。', token: 'first' },
 		apply: { error: '系统配置已变化，请重新预览。' }
 	});
 	const routes = page.getByLabel('通告子网路由');
 	const preview = page.getByRole('button', { name: '预览网络配置' });
-	const apply = page.getByRole('button', { name: '应用网络配置' });
+	const apply = page.getByRole('button', { name: '应用本地规则' });
 	await routes.fill('192.168.1.0/24');
 	assert.ok(await apply.isDisabled());
 	await preview.click();
+	assert.ok(await apply.isDisabled());
 	assert.ok(await page.getByText('仅允许转发至 192.168.1.0/24。', { exact: true }).isVisible());
 	assert.deepEqual(await page.evaluate(() => window.calls.filter(x => x.object.endsWith('.network')).map(x => x.method)), ['preview']);
 	await routes.fill('10.0.0.0/8');
 	assert.ok(await apply.isDisabled());
 	await page.evaluate(() => Object.assign(window.replies.preview, { preview: '仅允许转发至 10.0.0.0/8。', token: 'second' }));
 	await preview.click();
+	const subnet = page.getByRole('region', { name: '子网转发' });
+	await subnet.getByRole('button', { name: '保存设置' }).click();
+	assert.ok(await subnet.getByText('10.0.0.0/8', { exact: true }).isVisible());
 	await apply.click();
 	assert.ok(await page.getByText('系统配置已变化，请重新预览。').isVisible());
 	assert.ok(await apply.isDisabled());
 	assert.deepEqual(await page.evaluate(() => window.calls.find(x => x.method === 'apply').data), { routes: '10.0.0.0/8', token: 'second' });
+	await page.evaluate(() => { window.replies.apply = { preview: '已应用网络配置。', routes: ['10.0.0.0/8'] }; });
+	await preview.click();
+	await apply.click();
+	assert.ok(await subnet.getByText(/已应用 OpenWrt 本地规则/).isVisible());
+	await subnet.getByRole('button', { name: '清空网段' }).click();
+	assert.equal(await routes.inputValue(), '');
+	assert.ok(await routes.evaluate(el => el === document.activeElement));
+	await page.evaluate(() => {
+		window.replies.preview = { preview: '清除插件管理的子网转发规则。', token: 'empty' };
+		window.replies.apply = { preview: '已应用网络配置。', routes: [] };
+	});
+	await preview.click();
+	assert.ok(await apply.isDisabled());
+	await subnet.getByRole('button', { name: '保存设置' }).click();
+	await apply.click();
+	assert.ok(await subnet.getByText('已移除', { exact: true }).isVisible());
+	assert.ok(await subnet.getByText(/撤回路由通告/).isVisible());
+	assert.deepEqual(await page.evaluate(() => window.calls.filter(x => x.method === 'apply').at(-1).data), { routes: '', token: 'empty' });
+});
+
+test('其他入口改存网段后保留草稿，显示设备当前值并可重新保存和应用', async t => {
+	for (const savedRoutes of ['198.51.100.0/24', '']) {
+		const page = await openView(t, 'manage', {
+			preview: { preview: '允许测试网段', token: 'first' }
+		});
+		const subnet = page.getByRole('region', { name: '子网转发' });
+		const routes = subnet.getByLabel('通告子网路由');
+		const preview = subnet.getByRole('button', { name: '预览网络配置' });
+		const apply = subnet.getByRole('button', { name: '应用本地规则' });
+		const save = subnet.getByRole('button', { name: '保存设置' });
+		await routes.fill('192.0.2.0/24');
+		await save.click();
+		await preview.click();
+		await page.evaluate(value => {
+			window.replies.apply = {
+				error: '已保存网段已变化，请保存当前草稿后重新预览。',
+				code: 'saved_routes_changed', saved_routes: value
+			};
+		}, savedRoutes);
+		await apply.click();
+		assert.equal(await routes.inputValue(), '192.0.2.0/24');
+		assert.ok(await subnet.getByText(savedRoutes || '未配置', { exact: true }).isVisible());
+		assert.ok(await subnet.getByText('暂无操作结果', { exact: true }).isVisible());
+		assert.ok(await apply.isDisabled());
+		await preview.click();
+		assert.ok(await apply.isDisabled());
+		await save.click();
+		const lastSave = await page.evaluate(() => window.calls.filter(call => call.method === 'save').at(-1).data);
+		assert.equal(lastSave.previous.params['advertise-routes'] || '', savedRoutes);
+		assert.equal(lastSave.params['advertise-routes'], '192.0.2.0/24');
+		await page.evaluate(() => { window.replies.apply = { routes: ['192.0.2.0/24'] }; });
+		await apply.click();
+		assert.ok(await subnet.getByText(/已应用 OpenWrt 本地规则/).isVisible());
+	}
+});
+
+test('子网后续指引随节点安装、启动、授权和连接状态更新', async t => {
+	const page = await openView(t, 'manage');
+	const subnet = page.getByRole('region', { name: '子网转发' });
+	assert.ok(await subnet.getByText(/从节点卡下载安装/).isVisible());
+	for (const [state, instruction] of [
+		['Stopped', /从节点卡启动连接/],
+		['NeedsLogin', /先完成节点授权/],
+		['NeedsMachineAuth', /先完成节点授权/],
+		['Running', /新增或更换网段时.*应用连接设置/]
+	]) {
+		await page.evaluate(async state => {
+			Object.assign(window.replies.status, { source: 'project', installed: true, state });
+			await window.refresh();
+		}, state);
+		assert.ok(await subnet.getByText(instruction).isVisible());
+		assert.ok(await subnet.getByText(/按控制端策略批准路由/).isVisible());
+	}
 });
 
 test('服务尚未启动也能读取安装失败记录，两类日志独立更新并按文本展示', async t => {
@@ -187,6 +431,25 @@ test('服务尚未启动也能读取安装失败记录，两类日志独立更�
 	assert.ok(await page.getByText('tailscaled 已启动', { exact: true }).isVisible());
 	assert.ok(await page.getByText('读取失败', { exact: true }).isVisible());
 	assert.ok(await page.getByText('下载失败：文件不可用 <tag>', { exact: true }).isVisible());
+	await page.evaluate(() => { location.hash = '#log-runtime'; });
+	const runtime = page.getByRole('heading', { name: '运行日志' });
+	await page.waitForFunction(() => document.activeElement?.textContent === '运行日志');
+	assert.ok(await runtime.evaluate(el => el === document.activeElement));
+});
+
+test('主题拉宽标题时，节点和日志卡的标题与入口仍同排对齐', async t => {
+	for (const [view, title, link] of [
+		['manage', '节点状态', '查看日志'],
+		['logs', '安装与更新记录', '返回节点管理']
+	]) {
+		const page = await openView(t, view, { logs: { install: { text: '' }, runtime: { text: '' } } });
+		await page.setViewportSize({ width: 1280, height: 800 });
+		await page.addStyleTag({ content: 'h3 { width: 100%; padding: 14px 20px; }' });
+		const head = await page.getByRole('heading', { name: title }).boundingBox();
+		const entry = await page.getByRole('link', { name: link }).first().boundingBox();
+		const sameRow = Math.abs(head.y + head.height / 2 - entry.y - entry.height / 2) < 2;
+		assert.ok(sameRow && entry.x >= head.x + head.width);
+	}
 });
 
 test('服务菜单进入节点管理与日志，只读用户可查看配置且不能启动写操作', async t => {
@@ -203,5 +466,5 @@ test('服务菜单进入节点管理与日志，只读用户可查看配置且�
 	assert.deepEqual(await page.evaluate(() => window.calls.map(x => x.method)), ['status', 'config']);
 	assert.equal(await page.getByRole('link', { name: '打开授权页面' }).count(), 0);
 	assert.ok(await page.getByRole('button', { name: '保存设置' }).isDisabled());
-	assert.ok(await page.getByRole('button', { name: '下载安装' }).isDisabled());
+	assert.equal(await page.getByRole('button', { name: '下载安装' }).count(), 0);
 });
