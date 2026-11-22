@@ -95,7 +95,12 @@ function method(name, params, object) {
 	const call = rpc.declare({ object: object || 'small-tailscale', method: name, params: params || [], reject: true });
 	return async function() {
 		const result = await call(...arguments);
-		if (!result || result.error) throw new Error(result && result.error || '路由器未返回操作结果');
+		if (!result || result.error) {
+			const err = new Error(result?.error || '路由器未返回操作结果');
+			err.code = result?.code;
+			err.savedRoutes = result?.saved_routes;
+			throw err;
+		}
 		return result;
 	};
 }
@@ -276,6 +281,7 @@ return view.extend({
 		const localRoutesText = E('code', {}, ['暂无操作结果']);
 		const planList = E('ul');
 		const networkNotice = E('p', { class: 'smallts-hint', role: 'status' });
+		const networkNext = E('p', { class: 'smallts-hint' });
 		const subnetSave = button('保存设置', () => run(null, true));
 		const review = button('预览网络配置', () => network(false));
 		const confirm = button('应用本地规则', () => network(true));
@@ -320,6 +326,11 @@ return view.extend({
 				}
 			}
 			catch (err) {
+				if (applying && err.code === 'saved_routes_changed' && typeof err.savedRoutes === 'string') {
+					// 仅接纳路由器确认的网段，其余字段继续参与整表冲突校验。
+					if (err.savedRoutes) settings.params['advertise-routes'] = err.savedRoutes;
+					else delete settings.params['advertise-routes'];
+				}
 				networkNotice.textContent = err.message + (applying && !err.message.includes('重新预览') ? ' 请重新预览。' : '');
 			}
 			finally { pending = false; update(); }
@@ -383,6 +394,19 @@ return view.extend({
 				review.classList.toggle('cbi-button-apply', !plan && !blocked);
 				confirm.classList.toggle('cbi-button-apply', !confirm.disabled);
 				subnetSave.classList.toggle('cbi-button-apply', !!plan && needsSave && !blocked);
+				let next;
+				if (!writable) next = '当前账号仅有读取权限。';
+				else if (!node.installed) next = '从节点卡下载安装，再启动连接。可以先保存网段并准备本地规则。';
+				else if (node.state === 'NeedsLogin')
+					next = '先完成节点授权。请在节点卡查看授权地址或运行日志。';
+				else if (node.state === 'NeedsMachineAuth')
+					next = '先完成节点授权。请等待管理员批准设备，并在节点卡查看连接状态。';
+				else if (node.state === 'Running')
+					next = '新增或更换网段时，保存网段并应用本地规则，再到节点卡应用连接设置。';
+				else if (node.state === 'Stopped')
+					next = '从节点卡启动连接。可以先保存网段并准备本地规则。';
+				else next = '请在节点卡查看服务状态。可以先保存网段并准备本地规则。';
+				networkNext.textContent = next + (writable ? '通告新网段后需按控制端策略批准路由。' : '');
 			}
 			persist.disabled = blocked || !changed;
 			footer.hidden = !managed;
@@ -443,7 +467,7 @@ return view.extend({
 				installedNow = job?.waiting && job.kind === 'install' && !job.before.installed && next.installed;
 				node = next;
 				statusError = '';
-				if (job?.waiting) observeJob();
+				if (job?.waiting || job?.awaitingAuthorization) observeJob();
 			}
 			catch (err) {
 				if (seq !== statusRequest) return;
@@ -466,9 +490,10 @@ return view.extend({
 				observation = '路由器已返回授权地址，可以继续登录。';
 			else if (node.state === 'NeedsMachineAuth')
 				observation = '等待控制端管理员批准此设备。';
-			else if (node.state === 'Running' && job.before.state !== 'Running')
+			else if (node.state === 'Running' && (job.before.state !== 'Running' || job.awaitingAuthorization))
 				observation = '路由器报告节点已连接。';
 			job.waiting = !!node.busy;
+			job.awaitingAuthorization = job.kind === 'start' && ['NeedsLogin', 'NeedsMachineAuth'].includes(node.state);
 			job.text = job.saved + (observation || (node.busy ? '路由器报告操作进行中。' : '操作已解锁，结果待确认。请查看日志，必要时重试。'));
 		}
 
@@ -547,7 +572,7 @@ return view.extend({
 					])
 				]),
 				E('div', { class: 'smallts-chain' }, [
-					E('p', { class: 'smallts-hint' }, ['新增或更换网段时，保存网段并应用本地规则，再到节点卡应用连接设置。通告后需按控制端策略批准路由。']),
+					networkNext,
 					E('p', { class: 'smallts-hint' }, ['撤回通告时，请保存空网段，再到节点卡应用连接设置。']),
 					nodeJump
 				])

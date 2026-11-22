@@ -50,7 +50,9 @@ field "$(apply '192.168.1.0/24' "$token")" error | grep -Fq '保存'
 [ "$before" = "$(snapshot)" ]
 save_routes '192.168.1.0/24'
 save_routes '10.0.0.0/8'
-field "$(apply '192.168.1.0/24' "$token")" error | grep -Fq '保存相同'
+conflict=$(apply '192.168.1.0/24' "$token")
+[ "$(field "$conflict" code)" = saved_routes_changed ]
+[ "$(field "$conflict" saved_routes)" = '10.0.0.0/8' ]
 [ "$before" = "$(snapshot)" ]
 save_routes '192.168.1.0/24'
 # 使用登录会话的专有暂存区，既有预览也不能覆盖其他浏览器未提交的更改。
@@ -75,6 +77,11 @@ uci show network | grep -Fq "device='tailscale0'"
 forward=$(nft list chain inet fw4 forward)
 echo "$forward" | grep -F 'iifname "tailscale0" ip daddr 192.168.1.0/24' | grep -q accept
 [ "$input_before" = "$(nft list chain inet fw4 input)" ]
+save_routes ''
+conflict=$(apply '192.168.1.0/24' "$token")
+[ "$(field "$conflict" code)" = saved_routes_changed ]
+echo "$conflict" | grep -Eq '"saved_routes":[[:space:]]*""'
+[ "$forward" = "$(nft list chain inet fw4 forward)" ]
 # 替换、重复应用和清空网段均以已加载的内核规则为准。
 confirm() {
 	preview_token=$(field "$(preview "$1")" token)

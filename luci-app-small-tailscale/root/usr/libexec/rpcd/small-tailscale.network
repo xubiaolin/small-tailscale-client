@@ -277,11 +277,32 @@ function run() {
 		die('未知的网络操作。');
 	const request = cleanup ? null : json(fs.stdin.read('all'));
 	const routes = cleanup ? [] : subnets(request.routes);
-	let lock;
-	if (cleanup || ARGV[1] == 'apply') {
+	const applying = !cleanup && ARGV[1] == 'apply';
+	let lock, configLock;
+	if (cleanup || applying) {
 		lock = fs.open('/var/lock/small-tailscale-network', 'a', 0600);
 		if (!lock || !lock.lock('x'))
 			die('网络配置锁定失败。');
+	}
+	if (applying) {
+		configLock = fs.open('/var/lock/small-tailscale-config.lock', 'a', 0600);
+		if (!configLock || !configLock.lock('sn'))
+			die('设置正在修改，请稍后重新预览。');
+		if (!(capture('/usr/share/small-tailscale/source') in ['none', 'project']))
+			die('请先处理已有的外部 Tailscale 安装。');
+		const config = json(capture("printf '{}' | /usr/libexec/rpcd/small-tailscale call config"));
+		if (!config?.params)
+			die('无法读取已保存网段。');
+		const saved = config.params['advertise-routes'] || '';
+		let savedSubnets;
+		try { savedSubnets = subnets(saved); } catch (_) {}
+		if (!savedSubnets || join(',', savedSubnets) != join(',', routes)) {
+			return {
+				error: '已保存网段已变化，请保存当前草稿后重新预览。',
+				code: 'saved_routes_changed',
+				saved_routes: saved
+			};
+		}
 	}
 	const uci = cursor();
 	if (pendingChanges())
@@ -292,19 +313,9 @@ function run() {
 		if (plan.remove || plan.update) activate(routes, plan, token);
 		return {ok: true};
 	}
-	if (ARGV[1] == 'apply') {
+	if (applying) {
 		if (type(request.token) != 'string' || request.token != token)
 			die('网段或系统配置已变化，请重新预览。');
-		const configLock = fs.open('/var/lock/small-tailscale-config.lock', 'a', 0600);
-		if (!configLock || !configLock.lock('sn'))
-			die('设置正在修改，请稍后重新预览。');
-		if (!(capture('/usr/share/small-tailscale/source') in ['none', 'project']))
-			die('请先处理已有的外部 Tailscale 安装。');
-		const config = json(capture("printf '{}' | /usr/libexec/rpcd/small-tailscale call config"));
-		if (!config?.params)
-			die('无法读取已保存网段。');
-		if (join(',', subnets(config.params['advertise-routes'] || '')) != join(',', routes))
-			die('请先保存相同的通告子网路由，再应用本地规则。');
 		activate(routes, plan, token);
 		return {preview: '已应用网络配置。', token: previewToken(routes), routes};
 	}

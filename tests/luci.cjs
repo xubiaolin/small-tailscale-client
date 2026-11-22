@@ -114,6 +114,26 @@ test('项目节点保留实际版本，从待授权轮询至已连接，并显�
 	assert.ok(await page.getByText('已连接', { exact: true }).isVisible());
 });
 
+test('批准等待期间任务解锁，批准后更新节点和 IP 并收起等待文案', async t => {
+	const page = await openView(t, 'manage', {
+		status: { source: 'project', installed: true, state: 'Stopped', version: 'v1.92.3', ips: [] }
+	});
+	await page.getByRole('button', { name: '启动并连接' }).click();
+	await page.evaluate(async () => {
+		Object.assign(window.replies.status, { busy: false, state: 'NeedsMachineAuth' });
+		await window.refresh();
+	});
+	assert.ok(await page.getByText('等待控制端管理员批准此设备。', { exact: true }).isVisible());
+	assert.ok(await page.getByLabel('主机名', { exact: true }).isEditable());
+	await page.evaluate(async () => {
+		Object.assign(window.replies.status, { state: 'Running', ips: ['100.64.0.12'] });
+		await window.refresh();
+	});
+	assert.ok(await page.getByText('100.64.0.12', { exact: true }).isVisible());
+	assert.ok(await page.getByText('已连接', { exact: true }).isVisible());
+	assert.equal(await page.getByText(/等待控制端管理员批准/).count(), 0);
+});
+
 test('网页未修改时直接使用设备的最新设置，旧页面提交冲突后保留输入', async t => {
 	const page = await openView(t, 'manage', { save: { error: '设置已由其他入口修改，请刷新页面后重新保存。' } });
 	await page.evaluate(() => { window.replies.config = { ...window.replies.config, mirror: 'https://cli.example' }; });
@@ -274,6 +294,61 @@ test('子网预览读取草稿，应用须先保存，失败后重新预览并�
 	assert.ok(await subnet.getByText('已移除', { exact: true }).isVisible());
 	assert.ok(await subnet.getByText(/撤回路由通告/).isVisible());
 	assert.deepEqual(await page.evaluate(() => window.calls.filter(x => x.method === 'apply').at(-1).data), { routes: '', token: 'empty' });
+});
+
+test('其他入口改存网段后保留草稿，显示设备当前值并可重新保存和应用', async t => {
+	for (const savedRoutes of ['198.51.100.0/24', '']) {
+		const page = await openView(t, 'manage', {
+			preview: { preview: '允许测试网段', token: 'first' }
+		});
+		const subnet = page.getByRole('region', { name: '子网转发' });
+		const routes = subnet.getByLabel('通告子网路由');
+		const preview = subnet.getByRole('button', { name: '预览网络配置' });
+		const apply = subnet.getByRole('button', { name: '应用本地规则' });
+		const save = subnet.getByRole('button', { name: '保存设置' });
+		await routes.fill('192.0.2.0/24');
+		await save.click();
+		await preview.click();
+		await page.evaluate(value => {
+			window.replies.apply = {
+				error: '已保存网段已变化，请保存当前草稿后重新预览。',
+				code: 'saved_routes_changed', saved_routes: value
+			};
+		}, savedRoutes);
+		await apply.click();
+		assert.equal(await routes.inputValue(), '192.0.2.0/24');
+		assert.ok(await subnet.getByText(savedRoutes || '未配置', { exact: true }).isVisible());
+		assert.ok(await subnet.getByText('暂无操作结果', { exact: true }).isVisible());
+		assert.ok(await apply.isDisabled());
+		await preview.click();
+		assert.ok(await apply.isDisabled());
+		await save.click();
+		const lastSave = await page.evaluate(() => window.calls.filter(call => call.method === 'save').at(-1).data);
+		assert.equal(lastSave.previous.params['advertise-routes'] || '', savedRoutes);
+		assert.equal(lastSave.params['advertise-routes'], '192.0.2.0/24');
+		await page.evaluate(() => { window.replies.apply = { routes: ['192.0.2.0/24'] }; });
+		await apply.click();
+		assert.ok(await subnet.getByText(/已应用 OpenWrt 本地规则/).isVisible());
+	}
+});
+
+test('子网后续指引随节点安装、启动、授权和连接状态更新', async t => {
+	const page = await openView(t, 'manage');
+	const subnet = page.getByRole('region', { name: '子网转发' });
+	assert.ok(await subnet.getByText(/从节点卡下载安装/).isVisible());
+	for (const [state, instruction] of [
+		['Stopped', /从节点卡启动连接/],
+		['NeedsLogin', /先完成节点授权/],
+		['NeedsMachineAuth', /先完成节点授权/],
+		['Running', /新增或更换网段时.*应用连接设置/]
+	]) {
+		await page.evaluate(async state => {
+			Object.assign(window.replies.status, { source: 'project', installed: true, state });
+			await window.refresh();
+		}, state);
+		assert.ok(await subnet.getByText(instruction).isVisible());
+		assert.ok(await subnet.getByText(/按控制端策略批准路由/).isVisible());
+	}
 });
 
 test('服务尚未启动也能读取安装失败记录，两类日志独立更新并按文本展示', async t => {
