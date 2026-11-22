@@ -11,6 +11,7 @@ const styles = `
 }
 .smallts [hidden] { display: none !important; }
 .smallts :is(p, dl, dd, h3, h4) { margin: 0; }
+.smallts .cbi-section h3, .smallts .cbi-section h4 { width: auto; padding: 0; background: none; line-height: 1.4; }
 .smallts :is(a, button, input, select, summary, h3):focus-visible {
 	outline: 2px solid var(--smallts-accent);
 	outline-offset: 3px;

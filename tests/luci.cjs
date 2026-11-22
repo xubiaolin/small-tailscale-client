@@ -282,6 +282,25 @@ test('服务尚未启动也能读取安装失败记录，两类日志独立更�
 	assert.ok(await page.getByText('tailscaled 已启动', { exact: true }).isVisible());
 	assert.ok(await page.getByText('读取失败', { exact: true }).isVisible());
 	assert.ok(await page.getByText('下载失败：文件不可用 <tag>', { exact: true }).isVisible());
+	await page.evaluate(() => { location.hash = '#log-runtime'; });
+	const runtime = page.getByRole('heading', { name: '运行日志' });
+	await page.waitForFunction(() => document.activeElement?.textContent === '运行日志');
+	assert.ok(await runtime.evaluate(el => el === document.activeElement));
+});
+
+test('主题拉宽标题时，节点和日志卡的标题与入口仍同排对齐', async t => {
+	for (const [view, title, link] of [
+		['manage', '节点状态', '查看日志'],
+		['logs', '安装与更新记录', '返回节点管理']
+	]) {
+		const page = await openView(t, view, { logs: { install: { text: '' }, runtime: { text: '' } } });
+		await page.setViewportSize({ width: 1280, height: 800 });
+		await page.addStyleTag({ content: 'h3 { width: 100%; padding: 14px 20px; }' });
+		const head = await page.getByRole('heading', { name: title }).boundingBox();
+		const entry = await page.getByRole('link', { name: link }).first().boundingBox();
+		const sameRow = Math.abs(head.y + head.height / 2 - entry.y - entry.height / 2) < 2;
+		assert.ok(sameRow && entry.x >= head.x + head.width);
+	}
 });
 
 test('服务菜单进入节点管理与日志，只读用户可查看配置且不能启动写操作', async t => {
