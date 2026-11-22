@@ -171,13 +171,19 @@ const groups = [
 	['常用连接设置', ['hostname', 'login-server', 'accept-dns', 'accept-routes', 'advertise-exit-node', 'exit-node']],
 	['身份与授权', ['auth-key', 'client-id', 'client-secret', 'id-token', 'advertise-tags', 'force-reauth']],
 	['路由与防火墙', ['exit-node-allow-lan-access', 'advertise-connector', 'netfilter-mode', 'snat-subnet-routes', 'stateful-filtering']],
-	['访问控制', ['operator', 'ssh', 'shields-up', 'accept-risk']]
+	['访问控制', ['operator', 'ssh', 'shields-up', 'accept-risk']],
+	['命令行为与输出', ['reset', 'timeout', 'json', 'qr', 'qr-format']]
 ];
 const labels = {
 	hostname: '主机名', 'accept-dns': '接受 DNS 配置', 'advertise-routes': '通告子网路由',
 	'accept-routes': '接受其他节点的路由', 'advertise-exit-node': '提供出口节点',
 	'exit-node': '使用出口节点', 'login-server': '控制服务器', 'auth-key': '节点授权密钥',
-	'client-id': '客户端 ID', 'client-secret': '客户端密钥', 'id-token': '身份令牌'
+	'client-id': '客户端 ID', 'client-secret': '客户端密钥', 'id-token': '身份令牌',
+	'advertise-tags': '通告标签', 'force-reauth': '强制重新授权',
+	'exit-node-allow-lan-access': '允许访问本地网络', 'advertise-connector': '通告应用连接器',
+	'netfilter-mode': 'Netfilter 模式', 'snat-subnet-routes': '对子网路由使用 SNAT', 'stateful-filtering': '有状态过滤',
+	operator: '操作用户', ssh: '启用 Tailscale SSH', 'shields-up': '屏蔽传入连接', 'accept-risk': '接受的风险',
+	reset: '重置未指定设置', timeout: '命令等待时间', json: 'JSON 输出', qr: '显示登录二维码', 'qr-format': '二维码格式'
 };
 
 function input(id, value, type) {
@@ -217,8 +223,7 @@ return view.extend({
 		showVersion();
 		const mirror = input('smallts-mirror', settings.mirror, 'url');
 		const controls = {};
-		const sections = groups.map(() => []);
-		const other = [];
+		const rows = {};
 		for (const opt of settings.options) {
 			const id = 'smallts-' + opt.key;
 			const value = settings.params[opt.key] || '';
@@ -226,12 +231,14 @@ return view.extend({
 				? choice(id, [['', '使用默认值'], ['true', '启用'], ['false', '禁用']], value)
 				: input(id, value, opt.type === 'secret' ? 'password' : 'text');
 			controls[opt.key] = ctrl;
-			const group = groups.findIndex(g => g[1].includes(opt.key));
 			if (opt.key !== 'advertise-routes') {
-				const row = field(labels[opt.key] || '--' + opt.key, ctrl, opt.description);
-				(group < 0 ? other : sections[group]).push(row);
+				const hint = opt.key === 'login-server' ? '更换后可能需要重新授权。' : opt.description;
+				rows[opt.key] = field(labels[opt.key] || '--' + opt.key, ctrl, hint);
 			}
 		}
+		const sections = groups.map(([, keys]) => keys.map(key => rows[key]).filter(Boolean));
+		const other = Object.keys(rows).filter(key => !groups.some(([, keys]) => keys.includes(key)));
+		sections[sections.length - 1].push(...other.map(key => rows[key]));
 		const primary = button('', () => run(node.installed ? 'start' : 'install'), true);
 		const authorize = E('a', { class: 'cbi-button cbi-button-apply', target: '_blank', rel: 'noopener noreferrer' }, ['打开授权页面']);
 		const dirtyHint = E('span', { class: 'smallts-hint' }, ['此操作会先保存整张表单。']);
@@ -429,9 +436,11 @@ return view.extend({
 
 		async function refresh() {
 			const seq = ++statusRequest;
+			let installedNow = false;
 			try {
 				const next = await status();
 				if (seq !== statusRequest) return;
+				installedNow = job?.waiting && job.kind === 'install' && !job.before.installed && next.installed;
 				node = next;
 				statusError = '';
 				if (job?.waiting) observeJob();
@@ -441,6 +450,8 @@ return view.extend({
 				statusError = '读取状态失败：' + err.message;
 			}
 			update();
+			if (installedNow && !primary.hidden && !primary.disabled && document.activeElement === document.body)
+				primary.focus({ preventScroll: true });
 		}
 
 		function observeJob() {
@@ -563,7 +574,6 @@ return view.extend({
 			if (sections[i].length)
 				advancedContent.append(E('h4', {}, [groups[i][0]]), E('div', { class: 'smallts-two' }, sections[i]));
 		}
-		if (other.length) advancedContent.append(E('h4', {}, ['命令行为与输出']), E('div', { class: 'smallts-two' }, other));
 		advanced.append(advancedContent);
 		editor.append(advanced);
 		const nodeTitle = E('h3', { id: 'smallts-node-title', tabindex: '-1' }, ['节点状态']);

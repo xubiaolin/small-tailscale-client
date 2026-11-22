@@ -89,6 +89,7 @@ test('首次下载先保存安装选择，任务解锁后以路由器实际报�
 	});
 	assert.ok(await start.isEnabled());
 	assert.ok(await page.getByText(/路由器检测到客户端已安装/).isVisible());
+	assert.ok(await start.evaluate(el => el === document.activeElement));
 });
 
 test('项目节点保留实际版本，从待授权轮询至已连接，并显示 Tailscale IP', async t => {
@@ -203,6 +204,11 @@ test('共享设置按用途展示，保存版本锁定、镜像和授权参数�
 	for (const label of ['主机名', '接受 DNS 配置', '通告子网路由', '使用出口节点', '控制服务器']) {
 		assert.ok(await page.getByLabel(label, { exact: true }).isVisible());
 	}
+	await page.getByLabel('自动更新').focus();
+	await page.keyboard.press('Tab');
+	assert.ok(await page.getByLabel('主机名', { exact: true }).evaluate(el => el === document.activeElement));
+	await page.keyboard.press('Tab');
+	assert.ok(await page.getByLabel('控制服务器', { exact: true }).evaluate(el => el === document.activeElement));
 	await page.getByLabel('主机名', { exact: true }).fill('home-router');
 	assert.equal(await page.getByLabel('接受 DNS 配置').inputValue(), 'false');
 	await page.getByText('高级设置', { exact: true }).click();
