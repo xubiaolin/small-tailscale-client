@@ -133,6 +133,33 @@ test('键盘安装后进入待授权时聚焦可用入口，后续轮询保留�
 	}
 });
 
+test('短视口中首次安装后将键盘焦点和维护入口一起带进视口', async t => {
+	for (const width of [320, 390]) {
+		const page = await openView(t, 'manage');
+		await page.setViewportSize({ width, height: 480 });
+		await page.addStyleTag({ content: '.smallts-facts > div:nth-child(4) { min-height: 290px; }' });
+		await page.keyboard.press('Tab');
+		await page.keyboard.press('Tab');
+		const download = page.getByRole('button', { name: '下载安装', exact: true });
+		assert.ok(await download.evaluate(el => el === document.activeElement));
+		await page.keyboard.press('Enter');
+		await page.evaluate(async () => {
+			Object.assign(window.replies.status, {
+				source: 'project', installed: true, state: 'NeedsLogin', daemon_running: true,
+				version: 'v1.92.3', auth_url: ''
+			});
+			await window.refresh();
+		});
+		const maintenance = page.getByText('维护操作', { exact: true });
+		assert.ok(await maintenance.evaluate(el => el === document.activeElement));
+		const box = await maintenance.boundingBox();
+		assert.ok(box.y >= 0 && box.y + box.height <= 480, '维护入口超出 ' + width + '×480 视口');
+		const scrollY = await page.evaluate(() => window.scrollY);
+		await page.evaluate(() => window.refresh());
+		assert.equal(await page.evaluate(() => window.scrollY), scrollY);
+	}
+});
+
 test('项目节点保留实际版本，从待授权轮询至已连接，并显示 Tailscale IP', async t => {
 	const page = await openView(t, 'manage', {
 		status: { source: 'project', installed: true, state: 'Stopped', version: 'v1.92.3', ips: [] }

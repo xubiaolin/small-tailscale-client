@@ -548,15 +548,15 @@ return view.extend({
 		}
 		networkNotice.textContent = '预览当前输入，确认将要应用的本地规则。';
 		const subnetTitle = E('h3', { id: 'smallts-subnet-title' }, ['子网转发']);
-		function focusNodeAction() {
+		function focusNodeAction(preventScroll = false) {
 			const target = !authorize.hidden ? authorize : !primary.hidden && !primary.disabled ? primary :
 				!maintenance.hidden ? maintenanceToggle : nodeTitle;
-			target.focus({ preventScroll: true });
+			target.focus({ preventScroll });
 		}
 		const nodeJump = E('a', { href: '#smallts-node-title', click: event => {
 			event.preventDefault();
 			nodeTitle.scrollIntoView();
-			focusNodeAction();
+			focusNodeAction(true);
 		} }, ['返回节点操作']);
 		if (routes) {
 			routes.placeholder = '例如 192.0.2.0/24';
