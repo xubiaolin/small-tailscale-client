@@ -14,7 +14,7 @@ sdk25=$(realpath "$2")
 SOURCE_DATE_EPOCH=${SOURCE_DATE_EPOCH:-$(git -C "$project" log -1 --format=%ct -- scripts luci-app-small-tailscale)}
 export SOURCE_DATE_EPOCH
 package=luci-app-small-tailscale
-version=1.0.1-r1
+version=1.0.2-r1
 dependencies='luci-base rpcd ucode ucode-mod-fs ucode-mod-uci firewall4 nftables-json kmod-tun ca-bundle curl coreutils-timeout'
 description='LuCI management for the small Tailscale client'
 out=${DIST_DIR:-"$project/dist"}
