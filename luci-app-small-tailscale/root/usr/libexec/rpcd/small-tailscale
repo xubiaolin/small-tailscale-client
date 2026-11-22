@@ -142,7 +142,10 @@ function status(withAuth) {
 	return {
 		source, installed, version,
 		state: node.BackendState || 'Stopped',
-		ips: node.TailscaleIPs || [], auth_url: url, busy: working
+		ips: node.TailscaleIPs || [], auth_url: url, busy: working,
+		daemon_running: source == 'project' && node.BackendState == 'NeedsLogin' &&
+			fs.access('/etc/init.d/tailscale', 'x') ?
+			system('/etc/init.d/tailscale running >/dev/null 2>&1') == 0 : null
 	};
 }
 
