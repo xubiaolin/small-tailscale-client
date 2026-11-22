@@ -473,9 +473,10 @@ return view.extend({
 				if (seq !== statusRequest) return;
 				statusError = '读取状态失败：' + err.message;
 			}
+			const active = document.activeElement;
 			update();
-			if (installedNow && !primary.hidden && !primary.disabled && document.activeElement === document.body)
-				primary.focus({ preventScroll: true });
+			if (installedNow && !node.busy && (active === document.body || active === primary))
+				focusNodeAction();
 		}
 
 		function observeJob() {
@@ -547,12 +548,15 @@ return view.extend({
 		}
 		networkNotice.textContent = '预览当前输入，确认将要应用的本地规则。';
 		const subnetTitle = E('h3', { id: 'smallts-subnet-title' }, ['子网转发']);
-		const nodeJump = E('a', { href: '#smallts-node-title', click: event => {
-			event.preventDefault();
-			nodeTitle.scrollIntoView();
+		function focusNodeAction() {
 			const target = !authorize.hidden ? authorize : !primary.hidden && !primary.disabled ? primary :
 				!maintenance.hidden ? maintenanceToggle : nodeTitle;
 			target.focus({ preventScroll: true });
+		}
+		const nodeJump = E('a', { href: '#smallts-node-title', click: event => {
+			event.preventDefault();
+			nodeTitle.scrollIntoView();
+			focusNodeAction();
 		} }, ['返回节点操作']);
 		if (routes) {
 			routes.placeholder = '例如 192.0.2.0/24';

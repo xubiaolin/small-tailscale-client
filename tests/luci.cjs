@@ -71,7 +71,10 @@ test('首次下载先保存安装选择，任务解锁后以路由器实际报�
 	assert.equal(await start.count(), 0);
 	await page.getByLabel('安装位置').selectOption('tmp');
 	const download = page.getByRole('button', { name: '保存并下载安装', exact: true });
-	await download.click();
+	await page.getByRole('link', { name: '查看日志' }).focus();
+	await page.keyboard.press('Tab');
+	assert.ok(await download.evaluate(el => el === document.activeElement));
+	await page.keyboard.press('Enter');
 	const calls = await page.evaluate(() => window.calls.filter(x => ['install', 'save', 'start'].includes(x.method)));
 	assert.deepEqual(calls.map(x => x.method), ['save', 'install']);
 	assert.equal(calls[0].data.mode, 'tmp');
@@ -90,6 +93,44 @@ test('首次下载先保存安装选择，任务解锁后以路由器实际报�
 	assert.ok(await start.isEnabled());
 	assert.ok(await page.getByText(/路由器检测到客户端已安装/).isVisible());
 	assert.ok(await start.evaluate(el => el === document.activeElement));
+});
+
+test('键盘安装后进入待授权时聚焦可用入口，后续轮询保留用户焦点', async t => {
+	const cases = [
+		{ url: '', target: '维护操作' },
+		{ url: 'https://login.example.test/a', target: '打开授权页面' },
+		{ url: '', target: '查看日志', moved: true }
+	];
+	for (const { url, target, moved } of cases) {
+		const page = await openView(t, 'manage');
+		const logs = page.getByRole('link', { name: '查看日志' });
+		await page.keyboard.press('Tab');
+		assert.ok(await logs.evaluate(el => el === document.activeElement));
+		await page.keyboard.press('Tab');
+		const download = page.getByRole('button', { name: '下载安装', exact: true });
+		assert.ok(await download.evaluate(el => el === document.activeElement));
+		await page.keyboard.press('Enter');
+		assert.ok(await page.getByText(/任务已提交/).isVisible());
+		if (moved) await page.keyboard.press('Shift+Tab');
+		await page.evaluate(async url => {
+			Object.assign(window.replies.status, {
+				source: 'project', installed: true, state: 'NeedsLogin', daemon_running: true, auth_url: url
+			});
+			await window.refresh();
+		}, url);
+		assert.ok(await page.getByText(/路由器检测到客户端已安装/).isVisible());
+		assert.equal(await page.evaluate(() => document.activeElement.textContent), target);
+		if (!url && !moved) {
+			await page.keyboard.press('Enter');
+			assert.ok(await page.getByRole('button', { name: '启动并连接' }).isEnabled());
+			await page.evaluate(async () => {
+				window.replies.status.auth_url = 'https://login.example.test/a';
+				await window.refresh();
+			});
+			assert.ok(await page.getByRole('link', { name: '打开授权页面' }).isVisible());
+			assert.equal(await page.evaluate(() => document.activeElement.textContent), '维护操作');
+		}
+	}
 });
 
 test('项目节点保留实际版本，从待授权轮询至已连接，并显示 Tailscale IP', async t => {
