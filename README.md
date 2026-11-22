@@ -30,10 +30,10 @@
 
 | 官方 OpenWrt 版本 | 安装文件 | 安装前准备 |
 | --- | --- | --- |
-| 24.10 | [下载 IPK（1.0.1-r1）](https://github.com/xubiaolin/small-tailscale-client/releases/download/luci-v1.0.1-r1/luci-app-small-tailscale_1.0.1-r1_all.ipk) | 在 **系统 → 软件包** 中更新软件包列表 |
-| 25.12 | [下载 APK（1.0.1-r1）](https://github.com/xubiaolin/small-tailscale-client/releases/download/luci-v1.0.1-r1/luci-app-small-tailscale-1.0.1-r1.apk) | 更新软件包列表，并导入[该版本的签名公钥](https://github.com/xubiaolin/small-tailscale-client/releases/download/luci-v1.0.1-r1/small-tailscale.pem) |
+| 24.10 | [下载 IPK（1.0.2-r1）](https://github.com/xubiaolin/small-tailscale-client/releases/download/luci-v1.0.2-r1/luci-app-small-tailscale_1.0.2-r1_all.ipk) | 在 **系统 → 软件包** 中更新软件包列表 |
+| 25.12 | [下载 APK（1.0.2-r1）](https://github.com/xubiaolin/small-tailscale-client/releases/download/luci-v1.0.2-r1/luci-app-small-tailscale-1.0.2-r1.apk) | 更新软件包列表，并导入[该版本的签名公钥](https://github.com/xubiaolin/small-tailscale-client/releases/download/luci-v1.0.2-r1/small-tailscale.pem) |
 
-安装包适用于各 CPU 架构。先在电脑上核对下载文件的 SHA256。[校验清单](https://github.com/xubiaolin/small-tailscale-client/releases/download/luci-v1.0.1-r1/SHA256SUMS) · [此版本的全部文件](https://github.com/xubiaolin/small-tailscale-client/releases/tag/luci-v1.0.1-r1)
+安装包适用于各 CPU 架构。先在电脑上核对下载文件的 SHA256。[校验清单](https://github.com/xubiaolin/small-tailscale-client/releases/download/luci-v1.0.2-r1/SHA256SUMS) · [此版本的全部文件](https://github.com/xubiaolin/small-tailscale-client/releases/tag/luci-v1.0.2-r1)
 
 若使用 OpenWrt 25.12，请将可信的 `small-tailscale.pem` 导入路由器一次。以下命令在公钥所在目录运行，把地址改成路由器的管理地址。
 
@@ -47,13 +47,13 @@ ssh root@192.168.1.1 'cat > /etc/apk/keys/small-tailscale.pem' < small-tailscale
 
 ```sh
 # OpenWrt 24.10
-opkg update && opkg install /tmp/luci-app-small-tailscale_1.0.1-r1_all.ipk
+opkg update && opkg install /tmp/luci-app-small-tailscale_1.0.2-r1_all.ipk
 
 # OpenWrt 25.12，已导入公钥
-apk update && apk add /tmp/luci-app-small-tailscale-1.0.1-r1.apk
+apk update && apk add /tmp/luci-app-small-tailscale-1.0.2-r1.apk
 ```
 
-25.12 也可在与可信校验清单核对 APK 的 SHA256 后，单次执行 `apk add --allow-untrusted /tmp/luci-app-small-tailscale-1.0.1-r1.apk`，跳过本次本地包的签名验证。
+25.12 也可在与可信校验清单核对 APK 的 SHA256 后，单次执行 `apk add --allow-untrusted /tmp/luci-app-small-tailscale-1.0.2-r1.apk`，跳过本次本地包的签名验证。
 
 ### 从源码构建安装包
 
